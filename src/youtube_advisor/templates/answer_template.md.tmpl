@@ -1,0 +1,11 @@
+{% if quote_style == "translation-first" %}
+> {{ translated_quote }}
+>
+> *"{{ verbatim_quote }}"*
+>
+> — [{{ video_title }} ({{ published_date }}), {{ timestamp_hms }}]({{ timestamp_link }})
+{% else %}
+> "{{ verbatim_quote }}"
+>
+> — [{{ video_title }} ({{ published_date }}), {{ timestamp_hms }}]({{ timestamp_link }})
+{% endif %}

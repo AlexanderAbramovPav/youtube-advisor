@@ -1,0 +1,15 @@
+#!/usr/bin/env python3
+"""Search this advisor's corpus.
+
+Usage:
+  python3 scripts/search.py "query terms" [--mode hybrid|keyword|semantic] [--top-k 10]
+"""
+import sys
+import pathlib
+
+sys.path.insert(0, str(pathlib.Path(__file__).parent / "_lib"))
+
+from youtube_advisor.search import cli
+
+if __name__ == "__main__":
+    cli()

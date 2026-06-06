@@ -1,0 +1,31 @@
+# {{ advisor_title }}
+
+This advisor was created by [youtube-advisor]({{ repo_url }}) v{{ generator_version }} on {{ created_at }}.
+
+**Corpus:** {{ n_videos }} videos from {{ channels_list }} ({{ date_range }}).
+
+**Languages:** corpus `{{ corpus_language }}`, answers `{{ answer_language }}` ({{ quote_style }} quote format).
+
+**Indices:** keyword (BM25) + semantic (`{{ embedding_model }}`, {{ embedding_dim }}-dim).
+
+## Use it
+
+In Claude Code:
+
+```
+/{{ channel_slug }}-advisor
+```
+
+Then ask anything related to the corpus topic. The advisor returns answers with verbatim quotes from the source videos, each linked at the exact timestamp.
+
+## Refresh it
+
+```
+/youtube-advisor update {{ channel_slug }}-advisor
+```
+
+The same selection filter is replayed; only new videos are fetched and indexed.
+
+## Edit the personality
+
+If the answers feel off, open `SKILL.md` and tweak the "Anti-patterns" or "Example queries" sections. Your edits are preserved across updates.

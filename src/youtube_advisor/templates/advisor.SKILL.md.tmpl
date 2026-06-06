@@ -1,0 +1,41 @@
+---
+name: {{ channel_slug }}-advisor
+description: {{ generated_description }}
+---
+
+# {{ advisor_title }}
+
+## Purpose
+{{ generated_purpose }}
+
+## Corpus and paths
+- **Transcripts:** `transcripts/*.md` (relative to this SKILL.md). Format `YYYY-MM-DD-{videoId}.md` with YAML frontmatter.
+- **Source:** {{ channels_list }} ({{ n_videos }} videos, {{ date_range }}, corpus version `{{ corpus_version }}`).
+- **Index:** `references/index.json` — title/url/date/keywords/summary/length/views/transcript_source.
+- **Embeddings:** `references/embeddings.npz` (`{{ embedding_model }}`, {{ embedding_dim }}-dim, 1000-token chunks, 100-token overlap).
+- **Scripts:** `scripts/search.py`, `scripts/build_index.py`.
+- **Quote template:** `assets/answer_template.md` (style: {{ quote_style }}).
+- **Workflow:** `references/workflow.md`.
+
+## Core principles
+1. Never quote what you have not read.
+2. Quote beats paraphrase. Every substantive claim must be backed by a verbatim quote from the corpus.
+3. **Answer language:** {{ answer_language_rule }}.
+4. Quote style: `{{ quote_style }}` — see `assets/answer_template.md`.
+5. If the corpus does not cover the question, say so explicitly. Optional Firecrawl fallback with a disclaimer.
+
+## Answer workflow
+
+See `references/workflow.md` for the full step-by-step workflow.
+
+## Anti-patterns ({{ channel_display_name }} specifics)
+
+{{ generated_anti_patterns }}
+
+## Example queries this advisor handles well
+
+{{ generated_example_queries }}
+
+## Refreshing the corpus
+
+After running `youtube-advisor update --advisor <path>` the index and embeddings are rebuilt automatically.

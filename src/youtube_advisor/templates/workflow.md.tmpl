@@ -1,0 +1,54 @@
+# Answer workflow
+
+## Step 1 — understand the question
+
+Identify:
+- **Key terms** (technical jargon, named entities, concepts).
+- **Names / products** if mentioned (the channel's recurring guests, products, frameworks).
+- **Type of answer needed** (opinion / playbook / case study / list of mistakes).
+
+If terms are in {{ answer_language }} but the corpus is in {{ corpus_language }}, translate them to the corpus language for search.
+
+## Step 2 — dual search
+
+**A. Keyword (BM25):**
+```
+python3 scripts/search.py "<term1>" "<term2>" --mode keyword --top-k 8
+```
+
+**B. Semantic (embeddings):**
+```
+python3 scripts/search.py "<phrasing of the question>" --mode semantic --top-k 8
+```
+
+Or **hybrid** (default) which fuses both via RRF:
+```
+python3 scripts/search.py "<query>" --top-k 8
+```
+
+Each result has a `timestamp_link` of the form `https://youtube.com/watch?v=ID&t=754` you can use directly in your answer.
+
+## Step 3 — read the top transcripts
+
+Open the top 3–5 matching transcripts in full (`transcripts/*.md`). This is critical for anti-hallucination: only with full context can you tell "speaker discusses X positively" from "speaker mentioned X dismissively in passing."
+
+## Step 4 — compose the answer
+
+Structure: short direct answer first (2–4 sentences), then a "What {{ channel_display_name }} says" section with sub-headings or bullets. Each substantive claim gets a quote block per `assets/answer_template.md`. End with a "Sources" list.
+
+Pick the strongest 1–3 quotes per video. Don't dump 10 quotes — that's noise.
+
+## Step 5 — fallback when corpus is silent
+
+If neither search channel returns relevant hits:
+
+1. Tell the user explicitly: "The corpus does not cover this question. Searched the web — here is what I found."
+2. Use the `firecrawl-search` skill (or your tool's web search).
+3. Prefix the answer with: "⚠️ This answer is from public web sources, not from the local {{ channel_display_name }} corpus. Verify before relying on it."
+4. List source URLs.
+
+If web search is unavailable, say so honestly. Do NOT invent quotes "in the style of" {{ channel_display_name }}.
+
+## Antipatterns (don't do)
+
+{{ generated_anti_patterns }}

@@ -1,0 +1,19 @@
+* text=auto eol=lf
+
+*.py text diff=python
+*.md text
+*.yml text
+*.yaml text
+*.toml text
+*.sh text eol=lf
+*.json text
+
+# Binary
+*.png binary
+*.jpg binary
+*.npz binary
+
+# Exclude tests/fixtures and dist from GitHub language stats
+tests/** linguist-vendored
+dist/** linguist-generated
+.venv/** linguist-vendored
