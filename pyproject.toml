@@ -1,0 +1,65 @@
+[project]
+name = "youtube-advisor"
+version = "0.1.0"
+description = "Turn any YouTube channel into an AI assistant skill that answers questions with verbatim quotes and timestamped video links."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+authors = [{ name = "Alexander Abramov" }]
+keywords = ["youtube", "claude-code", "claude-skill", "agent-skill", "rag", "transcripts", "bm25", "semantic-search", "fastembed", "yt-dlp", "llm", "advisor"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia :: Video",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Text Processing :: Indexing",
+    "Topic :: Utilities",
+]
+dependencies = [
+    "yt-dlp>=2024.5.0",
+    "youtube-transcript-api>=0.6.2",
+    "fastembed>=0.3.0",
+    "rank-bm25>=0.2.2",
+    "numpy>=1.26",
+    "pyyaml>=6.0",
+    "jinja2>=3.1",
+    "anthropic>=0.34.0",
+    "tqdm>=4.66",
+    "click>=8.1",
+]
+
+[project.optional-dependencies]
+whisper = ["faster-whisper>=1.0.0"]
+multilingual = ["fastembed[multilingual]"]
+dev = ["pytest>=8.0", "vcrpy>=6.0", "pytest-asyncio>=0.23"]
+
+[project.urls]
+Homepage = "https://github.com/AlexanderAbramovPav/youtube-advisor"
+Repository = "https://github.com/AlexanderAbramovPav/youtube-advisor"
+Issues = "https://github.com/AlexanderAbramovPav/youtube-advisor/issues"
+Changelog = "https://github.com/AlexanderAbramovPav/youtube-advisor/blob/main/CHANGELOG.md"
+Releases = "https://github.com/AlexanderAbramovPav/youtube-advisor/releases"
+
+[project.scripts]
+youtube-advisor = "youtube_advisor.cli:main"
+
+[tool.pytest.ini_options]
+addopts = "--tb=short"
+testpaths = ["tests"]
+markers = [
+    "slow: requires network or heavy models; skip by default",
+    "e2e: end-to-end integration; slower but no external network",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/youtube_advisor"]

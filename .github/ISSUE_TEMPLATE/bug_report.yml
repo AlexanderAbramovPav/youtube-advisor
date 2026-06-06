@@ -1,0 +1,52 @@
+name: Bug report
+description: Report a bug in youtube-advisor (build pipeline crash, search returns wrong results, etc.)
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: A clear description of the bug — what command you ran, what you expected, what happened instead.
+      placeholder: |
+        I ran `youtube-advisor bootstrap --channel @example --max 5 --out /tmp/test`
+        I expected ... but got ...
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction steps
+      description: Minimal steps a stranger can follow to reproduce.
+      placeholder: |
+        1. Clone repo
+        2. Run `...`
+        3. Observe `...`
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: youtube-advisor version
+      description: Output of `youtube-advisor --version` (or commit SHA if installed from git)
+    validations:
+      required: true
+  - type: input
+    id: python
+    attributes:
+      label: Python version
+      description: Output of `python --version`
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS
+      description: macOS 14.x / Ubuntu 22.04 / etc.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs / errors
+      description: Paste any traceback, error messages, or the contents of `<advisor>/ingest.errors.log` if relevant. Wrap in triple backticks.
+      render: shell

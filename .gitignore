@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.bak
+*.tmp
+.venv/
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+.DS_Store
+tests/cassettes/_local/
+tests/fixtures/whisper-cache/
