@@ -27,10 +27,6 @@ jobs:
         run: |
           uv venv
           uv pip install -e ".[dev]"
-      - name: Lint
-        run: |
-          source .venv/bin/activate
-          ruff check .
       - name: Run tests
         run: |
           source .venv/bin/activate
@@ -40,3 +36,10 @@ jobs:
           source .venv/bin/activate
           youtube-advisor --help
           youtube-advisor bootstrap --help
+      # Lint is interpreter-independent (target-version py311): run it once,
+      # and last, so a lint error never hides pytest / smoke results.
+      - name: Lint
+        if: ${{ !cancelled() && matrix.python-version == '3.11' }}
+        run: |
+          source .venv/bin/activate
+          ruff check .
