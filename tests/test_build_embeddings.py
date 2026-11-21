@@ -263,9 +263,19 @@ def _corrupt_missing_offsets(path):
         np.savez(f, vectors=vectors, model=model)
 
 
+def _corrupt_offsets_dtype(path):
+    with np.load(path, allow_pickle=False) as npz:
+        vectors, offsets, model = npz["vectors"], npz["offsets"], npz["model"]
+    short = np.zeros(len(offsets), dtype=[("video_id", "U16"), ("chunk_index", "i4")])
+    short["video_id"] = offsets["video_id"]
+    with open(path, "wb") as f:
+        np.savez(f, vectors=vectors, offsets=short, model=model)
+
+
 @pytest.mark.parametrize("corrupt", [
     _corrupt_garbage, _corrupt_flip_middle, _corrupt_missing_offsets,
-], ids=["garbage", "flipped-bytes", "missing-offsets"])
+    _corrupt_offsets_dtype,
+], ids=["garbage", "flipped-bytes", "missing-offsets", "offsets-dtype"])
 def test_incremental_corrupt_npz_triggers_full_rebuild(tmp_path, caplog, corrupt):
     t, r = tmp_path / "transcripts", tmp_path / "references"
     _transcript(t, "a", "alpha " * 200)
@@ -305,6 +315,33 @@ def test_failed_write_keeps_old_npz_and_leaves_no_temp_file(tmp_path):
 
     assert out.read_bytes() == old_bytes
     assert sorted(p.name for p in r.iterdir()) == ["embeddings.npz"]
+
+
+def test_save_removes_temp_file_left_by_killed_process(tmp_path):
+    t, r = tmp_path / "transcripts", tmp_path / "references"
+    _transcript(t, "a", "alpha")
+    r.mkdir()
+    (r / ".embeddings.99999.tmp.npz").write_bytes(b"partial")
+
+    _build(t, r, incremental=False)
+
+    assert sorted(p.name for p in r.iterdir()) == ["embeddings.npz"]
+
+
+def test_incremental_reembeds_transcript_edited_during_previous_build(tmp_path):
+    """An edit made after the previous build read the transcript, but before
+    it finished writing the npz, must still be picked up next time."""
+    t, r = tmp_path / "transcripts", tmp_path / "references"
+    a = _transcript(t, "a", "alpha")
+    out, _ = _build(t, r, incremental=False)
+    with np.load(out, allow_pickle=False) as npz:
+        built_at = float(npz["built_at"])
+    _set_mtime(a, built_at + 5)     # edited mid-build...
+    _set_mtime(out, built_at + 10)  # ...before the npz write finished
+
+    _, model = _build(t, r, incremental=True)
+
+    assert model.seen == ["alpha"]
 
 
 def test_incremental_embeds_only_new_transcript(tmp_path):

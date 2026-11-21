@@ -4,6 +4,7 @@ import numpy as np
 import os
 import pathlib
 import re
+import time
 from fastembed import TextEmbedding
 
 from ._md import parse_frontmatter
@@ -87,24 +88,30 @@ def _transcript_ids(transcripts_dir: pathlib.Path) -> dict[str, pathlib.Path]:
 def _load_existing(out: pathlib.Path, model_name: str):
     """Read the stored vectors and offsets for an incremental build.
 
-    Returns (vectors, offsets), or (None, None) when the file must be rebuilt
-    from scratch: it was written with another model, or it can't be read.
-    npz members load lazily, so a damaged member only fails when it is read;
-    the reads therefore sit inside the try as well.
+    Returns (vectors, offsets, built_at), or (None, None, None) when the file
+    must be rebuilt from scratch: it was written with another model, or it
+    can't be read. npz members load lazily, so a damaged member only fails
+    when it is read; the reads therefore sit inside the try as well.
+
+    built_at is when the previous build started reading transcripts. Files
+    written before `built_at` was stored fall back to the npz file's mtime.
     """
     try:
         with np.load(out, allow_pickle=False) as npz:
             # A different model means the stored vectors live in another
             # embedding space: drop them rather than mix incompatible vectors.
             if str(npz["model"]) != model_name:
-                return None, None
+                return None, None, None
             vecs, offs = npz["vectors"], npz["offsets"]
-        if vecs.ndim != 2 or len(vecs) != len(offs) or "video_id" not in (offs.dtype.names or ()):
-            raise ValueError(f"inconsistent arrays: vectors {vecs.shape}, offsets {offs.shape}")
+            built_at = (float(npz["built_at"]) if "built_at" in npz.files
+                        else out.stat().st_mtime)
+        if vecs.ndim != 2 or len(vecs) != len(offs) or offs.dtype != OFFSET_DTYPE:
+            raise ValueError(f"inconsistent arrays: vectors {vecs.shape}, "
+                             f"offsets {offs.shape} {offs.dtype}")
     except Exception as e:
         log.warning("Could not read %s (%s); rebuilding all embeddings.", out, e)
-        return None, None
-    return vecs, offs
+        return None, None, None
+    return vecs, offs, built_at
 
 
 def _save_atomic(out: pathlib.Path, **arrays) -> None:
@@ -112,8 +119,11 @@ def _save_atomic(out: pathlib.Path, **arrays) -> None:
 
     A crash or Ctrl-C during the write leaves the old file untouched. The temp
     file is opened by us and passed to np.savez as a file object, so numpy does
-    not append its own `.npz` suffix to the name.
+    not append its own `.npz` suffix to the name. Temp files left by a
+    process that was killed outright (no `finally`) are removed first.
     """
+    for stale in out.parent.glob(f".{out.stem}.*.tmp{out.suffix}"):
+        stale.unlink(missing_ok=True)
     tmp = out.with_name(f".{out.stem}.{os.getpid()}.tmp{out.suffix}")
     try:
         with open(tmp, "wb") as f:
@@ -131,7 +141,6 @@ def build_embeddings(transcripts_dir: pathlib.Path, refs_dir: pathlib.Path,
                      incremental: bool = False) -> pathlib.Path:
     refs_dir.mkdir(parents=True, exist_ok=True)
     out = refs_dir / "embeddings.npz"
-    on_disk = _transcript_ids(transcripts_dir)
 
     # Fast path: if nothing's changed AND the stored model matches the
     # requested one, skip. When the caller changes --multilingual (bge-m3,
@@ -156,23 +165,29 @@ def build_embeddings(transcripts_dir: pathlib.Path, refs_dir: pathlib.Path,
                 stored_model, stored_ids = None, set()
             # Subset, not equality: a transcript without timestamped lines
             # has no rows, and that must not force a rebuild every time.
-            if stored_model == model_name and stored_ids <= on_disk.keys():
+            if (stored_model == model_name
+                    and stored_ids <= _transcript_ids(transcripts_dir).keys()):
                 return out
 
     model = TextEmbedding(model_name=model_name)
 
+    # Taken before any transcript is read: a transcript edited while this
+    # build runs ends up newer than it and is re-embedded next time.
+    started = time.time()
+    on_disk = _transcript_ids(transcripts_dir)
+
     existing_vec, existing_off = None, None
     keep_ids: set[str] = set()
     if incremental and out.exists():
-        emb_mtime = out.stat().st_mtime
-        existing_vec, existing_off = _load_existing(out, model_name)
+        existing_vec, existing_off, built_at = _load_existing(out, model_name)
         if existing_off is not None:
             stored_ids = set(existing_off["video_id"].tolist())
             # Keep a transcript's stored rows only if it is still on disk and
-            # has not changed since the last build. Everything else is either
-            # re-embedded below (new or changed) or dropped (deleted).
+            # has not changed since the last build started. Everything else is
+            # re-embedded below (new or changed) or dropped (deleted). Strict
+            # `<`: on a coarse-mtime filesystem a tie means "maybe changed".
             keep_ids = {vid for vid, md in on_disk.items()
-                        if vid in stored_ids and md.stat().st_mtime <= emb_mtime}
+                        if vid in stored_ids and md.stat().st_mtime < built_at}
             mask = np.isin(existing_off["video_id"], list(keep_ids))
             existing_vec, existing_off = existing_vec[mask], existing_off[mask]
 
@@ -204,5 +219,6 @@ def build_embeddings(transcripts_dir: pathlib.Path, refs_dir: pathlib.Path,
         vecs = np.zeros((0, probe.shape[1]), dtype=np.float16)
         offs = np.zeros((0,), dtype=OFFSET_DTYPE)
 
-    _save_atomic(out, vectors=vecs, offsets=offs, model=np.array(model_name))
+    _save_atomic(out, vectors=vecs, offsets=offs, model=np.array(model_name),
+                 built_at=np.array(started))
     return out

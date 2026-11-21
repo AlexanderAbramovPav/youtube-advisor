@@ -228,8 +228,9 @@ def run(*, advisor_dir, since=None, max_n=None, ids=None,
                     for p in (out / "transcripts").glob(f"*-{v['video_id']}.md"):
                         p.unlink()
                 build_index(out / "transcripts", out / "references", incremental=False)
+                # Incremental: drops the rolled-back rows, re-embeds nothing.
                 build_embeddings(out / "transcripts", out / "references",
-                                 model_name=meta["embedding_model"], incremental=False)
+                                 model_name=meta["embedding_model"], incremental=True)
                 return {
                     "guide": f"⟲ Rolled back {len(new_videos)} new videos due to eval regression.\n",
                     "evals": eval_summary,
