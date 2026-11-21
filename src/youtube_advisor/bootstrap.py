@@ -1,6 +1,5 @@
 from __future__ import annotations
 import json
-import os
 import pathlib
 import shutil
 from datetime import date, datetime, timezone
@@ -229,7 +228,9 @@ def _write_pending_llm_draft(
         ),
         "samples": samples_json,
         "schema": {
-            "description": "One-paragraph SKILL.md frontmatter description that triggers the skill on relevant user queries.",
+            "description": (
+                "One-paragraph SKILL.md frontmatter description that triggers the skill on relevant user queries."
+            ),
             "purpose": "2-3 sentence purpose statement.",
             "anti_patterns": "List of 3-6 channel-specific failure modes to avoid (strings).",
             "example_queries": "List of 5-7 real example questions this advisor handles well (strings).",

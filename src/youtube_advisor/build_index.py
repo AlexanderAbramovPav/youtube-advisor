@@ -1,5 +1,6 @@
 from __future__ import annotations
-import json, pathlib
+import json
+import pathlib
 
 from ._md import parse_frontmatter
 

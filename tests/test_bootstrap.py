@@ -1,6 +1,6 @@
 import json
 import pathlib
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 import pytest
 
 from youtube_advisor.bootstrap import run, _resolve_quote_style, _detect_corpus_language
@@ -80,7 +80,7 @@ def test_detect_corpus_language_from_frontmatter(tmp_path):
 
 def test_run_creates_advisor_dir_and_meta(tmp_path, mock_pipeline):
     out = tmp_path / "yc-advisor"
-    result = run(**_base_kwargs(out))
+    run(**_base_kwargs(out))
     assert out.exists()
     assert (out / "transcripts").exists()
     assert (out / "references" / "corpus_meta.json").exists()
@@ -175,8 +175,10 @@ def test_bootstrap_derives_playlist_ids_for_scoping(tmp_path, mock_pipeline):
     # And the bootstrap derivation should propagate into FilterConfig — assert
     # via apply_filters: candidates not in PLwanted get dropped.
     from youtube_advisor.filters import FilterConfig, apply_filters
-    a = _stub_video("a"); a["playlist_ids"] = {"PLwanted"}
-    b = _stub_video("b"); b["playlist_ids"] = {"PLother"}
+    a = _stub_video("a")
+    a["playlist_ids"] = {"PLwanted"}
+    b = _stub_video("b")
+    b["playlist_ids"] = {"PLother"}
     kept = apply_filters([a, b], FilterConfig(playlist_ids=ids))
     assert [v["video_id"] for v in kept] == ["a"]
 

@@ -15,6 +15,7 @@ cd youtube-advisor && source .venv/bin/activate
 pytest -q                    # default: all unit + E2E (mocked-network only)
 pytest -m slow               # requires RUN_SLOW=1 — actual fastembed model + faster-whisper
 pytest -m e2e                # E2E only
+ruff check .                 # lint (E + F rules, same check as CI)
 ```
 
 ## Adding a fixture channel

@@ -1,5 +1,3 @@
-import pathlib
-import pytest
 from unittest.mock import patch, MagicMock
 from youtube_advisor.ingest.orchestrator import run_ingest, _existing
 from youtube_advisor.ingest.captions_api import NoCaptionsAvailable
@@ -112,13 +110,16 @@ def test_tier3_exception_logs_and_reports_failed(tmp_path):
 def test_mixed_outcomes_summary(tmp_path):
     segs = [{"start": 0, "duration": 1, "text": "x"}]
     def tier1_side(vid):
-        if vid == "a": return (segs, "en")
+        if vid == "a":
+            return (segs, "en")
         raise NoCaptionsAvailable(vid)
     def tier2_side(vid):
-        if vid == "b": return (segs, "en")
+        if vid == "b":
+            return (segs, "en")
         raise NoCaptionsAvailable(vid)
     def tier3_side(vid):
-        if vid == "c": return (segs, "en")
+        if vid == "c":
+            return (segs, "en")
         raise RuntimeError("crash")
     with patch("youtube_advisor.ingest.orchestrator.tier1.fetch_captions", side_effect=tier1_side), \
          patch("youtube_advisor.ingest.orchestrator.tier2.fetch_captions", side_effect=tier2_side), \

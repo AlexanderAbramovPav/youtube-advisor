@@ -76,11 +76,13 @@ def generate(advisor_dir: pathlib.Path, target: int = 8) -> None:
     }
 
     excerpt_block = "\n".join(f"### {vid}\n{body}" for vid, body in excerpts)
-    prompt = f"""Generate {target + 4} candidate benchmark questions for a YouTube-channel advisor based on these excerpts.
+    prompt = f"""Generate {target + 4} candidate benchmark questions for a YouTube-channel advisor \
+based on these excerpts.
 
 Each question:
 - Must be answerable from the excerpts (not generic).
-- Must include `expected_video_ids` listing the source video IDs (the stem before each excerpt — e.g. `abc123`, not the full filename).
+- Must include `expected_video_ids` listing the source video IDs (the stem before each excerpt — \
+e.g. `abc123`, not the full filename).
 - Must include 2-4 `expected_keywords` likely to appear in retrieved snippets.
 - `lang` should match the excerpt language ('en' for English, 'ru' for Russian, etc.).
 - `min_quotes` defaults to 1.

@@ -11,7 +11,6 @@ on first run if not pre-cached.
 """
 from __future__ import annotations
 import json
-import pathlib
 from unittest.mock import patch
 
 import pytest

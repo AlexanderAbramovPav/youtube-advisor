@@ -1,7 +1,5 @@
 """Tests for the cookies-resolution helper used to bypass YT anti-bot."""
 from __future__ import annotations
-import os
-import pathlib
 import pytest
 
 from youtube_advisor import _cookies as ck

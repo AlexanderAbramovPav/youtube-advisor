@@ -18,7 +18,8 @@ def _sample_transcripts(advisor_dir: pathlib.Path, n: int = 8) -> list[str]:
 def _build_prompt(channel_display_name: str, user_intent: str, meta: dict,
                   answer_language: str, quote_style: str, samples: list[str]) -> str:
     sample_block = "\n".join(f"### Sample {i+1}\n{s}" for i, s in enumerate(samples))
-    return f"""You are designing a Claude Code 'advisor' skill scaffolded over YouTube transcripts from {channel_display_name}.
+    return f"""You are designing a Claude Code 'advisor' skill scaffolded over YouTube transcripts \
+from {channel_display_name}.
 
 User intent: {user_intent}
 Corpus: {meta['n_videos']} videos. Answer language: {answer_language}. Quote style: {quote_style}.
@@ -28,7 +29,9 @@ Sample transcript excerpts (each ~3500 chars):
 {sample_block}
 ---
 
-Produce SKILL.md metadata via the `emit_skill_metadata` tool. Anti-patterns must be specific to THIS channel's typical failure modes (not generic advice). Example queries should be real questions a user would ask AND that this corpus can actually answer well.
+Produce SKILL.md metadata via the `emit_skill_metadata` tool. Anti-patterns must be specific to THIS \
+channel's typical failure modes (not generic advice). Example queries should be real questions a user \
+would ask AND that this corpus can actually answer well.
 """
 
 
@@ -42,7 +45,9 @@ def generate(advisor_dir: pathlib.Path, *, user_intent: str, answer_language: st
         "properties": {
             "description": {
                 "type": "string",
-                "description": "One-paragraph SKILL.md frontmatter description that triggers the skill on relevant user queries.",
+                "description": (
+                    "One-paragraph SKILL.md frontmatter description that triggers the skill on relevant user queries."
+                ),
             },
             "purpose": {
                 "type": "string",
