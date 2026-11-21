@@ -1,8 +1,6 @@
 import json
 import pathlib
-import shutil
 from unittest.mock import patch
-import pytest
 import yaml
 
 from youtube_advisor.update import run, _video_id_from_filename, _load_state, _save_state, _filter_from_yaml

@@ -1,5 +1,7 @@
 from __future__ import annotations
-import subprocess, os, pathlib
+import os
+import pathlib
+import subprocess
 from .captions_api import NoCaptionsAvailable
 from .._cookies import ytdlp_args
 

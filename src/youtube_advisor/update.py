@@ -83,7 +83,7 @@ def run(*, advisor_dir, since=None, max_n=None, ids=None,
         filt["max"] = max_n
     if ids is not None:
         ids_path = pathlib.Path(ids)
-        extra = {l.strip() for l in ids_path.read_text().splitlines() if l.strip()}
+        extra = {line.strip() for line in ids_path.read_text().splitlines() if line.strip()}
         filt["extra_ids"] = sorted(set(filt.get("extra_ids", [])) | extra)
 
     # Resolve LLM mode up-front so the early-return path can gate evals correctly.

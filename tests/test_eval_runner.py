@@ -1,8 +1,5 @@
 import json
-import pathlib
 from datetime import date, timedelta
-
-import pytest
 
 from youtube_advisor.eval_runner import run
 from youtube_advisor.ingest.normalize import write_transcript

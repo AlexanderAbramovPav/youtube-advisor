@@ -56,10 +56,14 @@ def apply_filters(candidates: Iterable[dict], cfg: FilterConfig) -> list[dict]:
             log.warning("Dropping video %s: malformed published_date %r",
                         v.get("video_id"), v.get("published_date"))
             return False
-        if cfg.since and pub < cfg.since: return False
-        if cfg.until and pub > cfg.until: return False
-        if inc_re and not inc_re.search(v["title"]): return False
-        if exc_re and exc_re.search(v["title"]): return False
+        if cfg.since and pub < cfg.since:
+            return False
+        if cfg.until and pub > cfg.until:
+            return False
+        if inc_re and not inc_re.search(v["title"]):
+            return False
+        if exc_re and exc_re.search(v["title"]):
+            return False
         if cfg.playlist_ids and not (cfg.playlist_ids & v.get("playlist_ids", set())):
             return False
         return True

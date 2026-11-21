@@ -42,11 +42,16 @@ def bootstrap_guide(advisor_dir: pathlib.Path) -> str:
     )
     sources_text = _source_counts_text(meta.get("transcript_source_counts", {}))
     slug_short = short_slug(advisor_dir.name)
+    channels = ", ".join(meta.get("channels", []))
+    date_range = meta.get("date_range", "")
+    corpus_lang = meta.get("corpus_language", "?")
+    answer_lang = meta.get("answer_language", "?")
+    quote_style = meta.get("quote_style", "?")
 
     return f"""✓ Advisor ready: {advisor_dir}
 
-Corpus: {meta['n_videos']} videos from {', '.join(meta.get('channels', []))} ({meta.get('date_range', '')}), {sources_text}.
-Languages: corpus {meta.get('corpus_language', '?')}, answers {meta.get('answer_language', '?')} ({meta.get('quote_style', '?')} quote format).
+Corpus: {meta['n_videos']} videos from {channels} ({date_range}), {sources_text}.
+Languages: corpus {corpus_lang}, answers {answer_lang} ({quote_style} quote format).
 Indices: keyword + semantic embeddings ({meta.get('embedding_model', '?')}).
 {eval_line}
 

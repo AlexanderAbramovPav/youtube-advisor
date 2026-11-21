@@ -1,5 +1,4 @@
 import os
-import json
 import numpy as np
 import pytest
 from unittest.mock import patch, MagicMock
@@ -153,7 +152,7 @@ def test_load_corpus_chunks_cached_across_calls(tmp_path):
     """E-1/E-2: repeated searches on the same corpus must hit the cache —
     chunks load happens once until the corpus mtime changes."""
     from youtube_advisor.search import (
-        _cached_chunks, _cached_npz, _corpus_mtime, _load_corpus_chunks_uncached,
+        _cached_chunks, _load_corpus_chunks_uncached,
     )
     _cached_chunks.cache_clear()
     fake = _fake_embed_model()
@@ -192,9 +191,12 @@ def test_semantic_rank_aligned_after_incremental_build(tmp_path):
 
     dim = 8
     # one-hot per video: m → axis 0, z → axis 1, a → axis 2
-    m_vec = np.zeros(dim, dtype=np.float32); m_vec[0] = 1.0
-    z_vec = np.zeros(dim, dtype=np.float32); z_vec[1] = 1.0
-    a_vec = np.zeros(dim, dtype=np.float32); a_vec[2] = 1.0
+    m_vec = np.zeros(dim, dtype=np.float32)
+    m_vec[0] = 1.0
+    z_vec = np.zeros(dim, dtype=np.float32)
+    z_vec[1] = 1.0
+    a_vec = np.zeros(dim, dtype=np.float32)
+    a_vec[2] = 1.0
 
     # First pass: only m and z; chunk count is 1 per video (short text).
     fake1 = _fake_embed_model(dim=dim, vectors=[m_vec, z_vec])

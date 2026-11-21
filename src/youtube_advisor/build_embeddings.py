@@ -87,9 +87,9 @@ def build_embeddings(transcripts_dir: pathlib.Path, refs_dir: pathlib.Path,
             try:
                 npz_check = np.load(out, allow_pickle=False)
                 stored_model = str(npz_check["model"])
-                stored_dim = npz_check["vectors"].shape[1] if npz_check["vectors"].size else None
+                _ = npz_check["vectors"].shape[1] if npz_check["vectors"].size else None
             except Exception:
-                stored_model, stored_dim = None, None
+                stored_model = None
             if stored_model == model_name:
                 # Optional dim sanity: only re-run if a stored dim contradicts
                 # the requested model — caught later by FastEmbed on probe.

@@ -1,5 +1,5 @@
-import json, time, pathlib
-import pytest
+import json
+import time
 from youtube_advisor.ingest.normalize import write_transcript
 from youtube_advisor.build_index import build_index, _parse_frontmatter
 

@@ -7,7 +7,7 @@ from youtube_advisor._progress import Progress
 
 
 def test_init_writes_progress_file(tmp_path: pathlib.Path):
-    p = Progress(tmp_path)
+    Progress(tmp_path)
     assert (tmp_path / ".progress.json").exists()
     state = json.loads((tmp_path / ".progress.json").read_text())
     assert state["stage"] == "init"

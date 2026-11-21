@@ -1,8 +1,6 @@
 import os
-import pathlib
 import subprocess
 import pytest
-from unittest.mock import patch, MagicMock
 from youtube_advisor.ingest import whisper as wh
 from youtube_advisor.ingest.captions_api import NoCaptionsAvailable
 

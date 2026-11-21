@@ -1,6 +1,9 @@
 from __future__ import annotations
 import functools
-import numpy as np, pathlib, json, re
+import json
+import pathlib
+import re
+import numpy as np
 from rank_bm25 import BM25Okapi
 from fastembed import TextEmbedding
 from .build_embeddings import _parse_md, _chunks

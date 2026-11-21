@@ -1,6 +1,4 @@
 import json
-import pathlib
-import pytest
 from unittest.mock import patch
 from youtube_advisor.gen_skill_md import generate, _sample_transcripts, _build_prompt
 from youtube_advisor.ingest.normalize import write_transcript

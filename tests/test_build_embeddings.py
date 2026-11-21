@@ -6,10 +6,7 @@ from youtube_advisor.ingest.normalize import write_transcript
 from youtube_advisor.build_embeddings import (
     build_embeddings,
     _chunks,
-    _parse_md,
     CHUNK_WORDS,
-    OVERLAP_WORDS,
-    OFFSET_DTYPE,
 )
 
 

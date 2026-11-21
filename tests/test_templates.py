@@ -25,7 +25,9 @@ def _full_context():
         "quote_style": "translation-first",
         "answer_language_rule": "Answer in Russian; quote verbatim in English",
         "channel_display_name": "@ycombinator",
-        "generated_anti_patterns": "- Don't paraphrase generic startup advice.\n- Don't attribute quotes without a source.",
+        "generated_anti_patterns": (
+            "- Don't paraphrase generic startup advice.\n- Don't attribute quotes without a source."
+        ),
         "generated_example_queries": "- How to hire your first engineer?\n- When to pivot?",
         "generator_version": "0.1.0",
         "repo_url": "https://github.com/AlexanderAbramovPav/youtube-advisor",

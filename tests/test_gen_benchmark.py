@@ -1,6 +1,4 @@
 import json
-import pathlib
-import pytest
 from unittest.mock import patch
 from youtube_advisor.gen_benchmark import generate, _validate, _sample_excerpts
 from youtube_advisor.ingest.normalize import write_transcript
@@ -14,7 +12,10 @@ def _setup_corpus(tmp_path, model_patch=None):
     (advisor / "transcripts").mkdir()
     write_transcript(advisor / "transcripts",
         {"video_id": "abc123", "title": "How to hire", "published_date": "2024-01-01", "channel": "@yc"},
-        [{"start": i*5, "duration": 5, "text": f"how to hire your first engineer carefully line {i}"} for i in range(5)],
+        [
+            {"start": i * 5, "duration": 5, "text": f"how to hire your first engineer carefully line {i}"}
+            for i in range(5)
+        ],
         "captions", "en")
     write_transcript(advisor / "transcripts",
         {"video_id": "def456", "title": "Pivots", "published_date": "2024-02-01", "channel": "@yc"},
