@@ -85,14 +85,15 @@ def build_embeddings(transcripts_dir: pathlib.Path, refs_dir: pathlib.Path,
         any_newer = any(p.stat().st_mtime > emb_mtime for p in transcripts_dir.glob("*.md"))
         if not any_newer:
             try:
-                npz_check = np.load(out, allow_pickle=False)
-                stored_model = str(npz_check["model"])
-                _ = npz_check["vectors"].shape[1] if npz_check["vectors"].size else None
+                with np.load(out, allow_pickle=False) as npz_check:
+                    stored_model = str(npz_check["model"])
+                    # Shape sanity only: a non-2-D `vectors` array raises here
+                    # and forces a rebuild. The stored dim is NOT compared with
+                    # the requested model's dim.
+                    _ = npz_check["vectors"].shape[1] if npz_check["vectors"].size else None
             except Exception:
                 stored_model = None
             if stored_model == model_name:
-                # Optional dim sanity: only re-run if a stored dim contradicts
-                # the requested model — caught later by FastEmbed on probe.
                 return out
 
     model = TextEmbedding(model_name=model_name)
@@ -100,13 +101,13 @@ def build_embeddings(transcripts_dir: pathlib.Path, refs_dir: pathlib.Path,
     existing_ids: set[str] = set()
     existing_vec, existing_off = None, None
     if incremental and out.exists():
-        npz = np.load(out, allow_pickle=False)
-        # If the stored model differs from the requested one, the existing
-        # vectors live in the wrong embedding space — drop them and rebuild
-        # everything rather than mixing incompatible vectors.
-        if str(npz["model"]) == model_name:
-            existing_vec, existing_off = npz["vectors"], npz["offsets"]
-            existing_ids = set(existing_off["video_id"].tolist())
+        with np.load(out, allow_pickle=False) as npz:
+            # If the stored model differs from the requested one, the existing
+            # vectors live in the wrong embedding space — drop them and rebuild
+            # everything rather than mixing incompatible vectors.
+            if str(npz["model"]) == model_name:
+                existing_vec, existing_off = npz["vectors"], npz["offsets"]
+                existing_ids = set(existing_off["video_id"].tolist())
 
     new_texts: list[str] = []
     new_offsets: list[tuple] = []
