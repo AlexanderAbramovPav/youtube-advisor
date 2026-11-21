@@ -205,3 +205,217 @@ def test_real_fastembed_pipeline(tmp_path):
     out = build_embeddings(t, tmp_path / "references")
     npz = np.load(out, allow_pickle=False)
     assert npz["vectors"].shape == (1, 384)
+
+
+# ----- robustness + incremental rebuild -----
+
+def _recording_model(dim=384):
+    """Stub model that records every text it was asked to embed."""
+    m = _fake_embed_model(dim)
+    inner = m.embed
+    m.seen = []
+
+    def embed(texts):
+        texts = list(texts)
+        m.seen.extend(texts)
+        return inner(texts)
+    m.embed = embed
+    return m
+
+
+def _build(t, r, incremental, model=None):
+    model = model or _recording_model()
+    with patch("youtube_advisor.build_embeddings.TextEmbedding", return_value=model):
+        out = build_embeddings(t, r, incremental=incremental)
+    return out, model
+
+
+def _set_mtime(path, ts):
+    os.utime(path, (ts, ts))
+
+
+def _transcript(t, vid, text):
+    write_transcript(t, _meta(vid), [_seg(0, text)], "captions", "en")
+    return next(t.glob(f"*-{vid}.md"))
+
+
+def _ids(npz_path):
+    with np.load(npz_path, allow_pickle=False) as npz:
+        return npz["offsets"]["video_id"].tolist()
+
+
+def _corrupt_garbage(path):
+    path.write_bytes(b"this is not a zip file")
+
+
+def _corrupt_flip_middle(path):
+    data = bytearray(path.read_bytes())
+    mid = len(data) // 2
+    for i in range(mid, min(mid + 64, len(data))):
+        data[i] ^= 0xFF
+    path.write_bytes(bytes(data))
+
+
+def _corrupt_missing_offsets(path):
+    with np.load(path, allow_pickle=False) as npz:
+        vectors, model = npz["vectors"], npz["model"]
+    with open(path, "wb") as f:
+        np.savez(f, vectors=vectors, model=model)
+
+
+def _corrupt_offsets_dtype(path):
+    with np.load(path, allow_pickle=False) as npz:
+        vectors, offsets, model = npz["vectors"], npz["offsets"], npz["model"]
+    short = np.zeros(len(offsets), dtype=[("video_id", "U16"), ("chunk_index", "i4")])
+    short["video_id"] = offsets["video_id"]
+    with open(path, "wb") as f:
+        np.savez(f, vectors=vectors, offsets=short, model=model)
+
+
+@pytest.mark.parametrize("corrupt", [
+    _corrupt_garbage, _corrupt_flip_middle, _corrupt_missing_offsets,
+    _corrupt_offsets_dtype,
+], ids=["garbage", "flipped-bytes", "missing-offsets", "offsets-dtype"])
+def test_incremental_corrupt_npz_triggers_full_rebuild(tmp_path, caplog, corrupt):
+    t, r = tmp_path / "transcripts", tmp_path / "references"
+    _transcript(t, "a", "alpha " * 200)
+    _transcript(t, "b", "bravo " * 200)
+    out, _ = _build(t, r, incremental=False)
+    corrupt(out)
+
+    with caplog.at_level("WARNING", logger="youtube_advisor.build_embeddings"):
+        out, model = _build(t, r, incremental=True)
+
+    assert "rebuilding all embeddings" in caplog.text
+    # Both transcripts were embedded again, and the new file loads cleanly.
+    assert any("alpha" in s for s in model.seen)
+    assert any("bravo" in s for s in model.seen)
+    assert sorted(set(_ids(out))) == ["a", "b"]
+
+
+def test_failed_write_keeps_old_npz_and_leaves_no_temp_file(tmp_path):
+    t, r = tmp_path / "transcripts", tmp_path / "references"
+    _transcript(t, "a", "alpha")
+    out, _ = _build(t, r, incremental=False)
+    old_bytes = out.read_bytes()
+    _transcript(t, "b", "bravo")
+
+    def failing_savez(file, **arrays):
+        # Write part of a file, then die, as a crash mid-write would.
+        if hasattr(file, "write"):
+            file.write(b"PK\x03\x04partial")
+        else:
+            with open(file, "wb") as f:
+                f.write(b"PK\x03\x04partial")
+        raise OSError("disk full")
+
+    with patch("youtube_advisor.build_embeddings.np.savez", side_effect=failing_savez):
+        with pytest.raises(OSError, match="disk full"):
+            _build(t, r, incremental=True)
+
+    assert out.read_bytes() == old_bytes
+    assert sorted(p.name for p in r.iterdir()) == ["embeddings.npz"]
+
+
+def test_save_removes_temp_file_left_by_killed_process(tmp_path):
+    t, r = tmp_path / "transcripts", tmp_path / "references"
+    _transcript(t, "a", "alpha")
+    r.mkdir()
+    (r / ".embeddings.99999.tmp.npz").write_bytes(b"partial")
+
+    _build(t, r, incremental=False)
+
+    assert sorted(p.name for p in r.iterdir()) == ["embeddings.npz"]
+
+
+def test_incremental_reembeds_transcript_edited_during_previous_build(tmp_path):
+    """An edit made after the previous build read the transcript, but before
+    it finished writing the npz, must still be picked up next time."""
+    t, r = tmp_path / "transcripts", tmp_path / "references"
+    a = _transcript(t, "a", "alpha")
+    out, _ = _build(t, r, incremental=False)
+    with np.load(out, allow_pickle=False) as npz:
+        built_at = float(npz["built_at"])
+    _set_mtime(a, built_at + 5)     # edited mid-build...
+    _set_mtime(out, built_at + 10)  # ...before the npz write finished
+
+    _, model = _build(t, r, incremental=True)
+
+    assert model.seen == ["alpha"]
+
+
+def test_incremental_embeds_only_new_transcript(tmp_path):
+    t, r = tmp_path / "transcripts", tmp_path / "references"
+    a = _transcript(t, "a", "alpha")
+    out, _ = _build(t, r, incremental=False)
+    emb_mtime = out.stat().st_mtime
+    _set_mtime(a, emb_mtime - 100)
+    b = _transcript(t, "b", "bravo")
+    # Even an old mtime must not hide a transcript the npz has never seen.
+    _set_mtime(b, emb_mtime - 50)
+
+    out, model = _build(t, r, incremental=True)
+
+    assert model.seen == ["bravo"]
+    assert sorted(_ids(out)) == ["a", "b"]
+
+
+def test_incremental_reembeds_transcript_newer_than_npz(tmp_path):
+    t, r = tmp_path / "transcripts", tmp_path / "references"
+    a = _transcript(t, "a", "alpha")
+    b = _transcript(t, "b", "bravo")
+    out, _ = _build(t, r, incremental=False)
+    emb_mtime = out.stat().st_mtime
+    _set_mtime(a, emb_mtime - 100)
+    b.write_text(b.read_text().replace("bravo", "bravo edited"))
+    _set_mtime(b, emb_mtime + 100)
+
+    out, model = _build(t, r, incremental=True)
+
+    assert model.seen == ["bravo edited"]
+    # The changed transcript's old row was replaced, not duplicated.
+    assert sorted(_ids(out)) == ["a", "b"]
+
+
+def test_incremental_drops_rows_of_deleted_transcript(tmp_path):
+    t, r = tmp_path / "transcripts", tmp_path / "references"
+    a = _transcript(t, "a", "alpha")
+    b = _transcript(t, "b", "bravo")
+    out, _ = _build(t, r, incremental=False)
+    _set_mtime(a, out.stat().st_mtime - 100)
+    b.unlink()
+
+    out, model = _build(t, r, incremental=True)
+
+    assert model.seen == []
+    assert _ids(out) == ["a"]
+    with np.load(out, allow_pickle=False) as npz:
+        assert npz["vectors"].shape == (1, 384)
+
+
+def test_incremental_all_deleted_keeps_vector_dim(tmp_path):
+    t, r = tmp_path / "transcripts", tmp_path / "references"
+    a = _transcript(t, "a", "alpha")
+    out, _ = _build(t, r, incremental=False)
+    a.unlink()
+
+    out, _ = _build(t, r, incremental=True)
+
+    with np.load(out, allow_pickle=False) as npz:
+        assert npz["vectors"].shape == (0, 384)
+        assert len(npz["offsets"]) == 0
+
+
+def test_full_build_fast_path_rebuilds_after_transcript_deleted(tmp_path):
+    """The non-incremental fast path used to return the old file after a
+    transcript was removed (e.g. an update rollback), keeping its rows."""
+    t, r = tmp_path / "transcripts", tmp_path / "references"
+    a = _transcript(t, "a", "alpha")
+    b = _transcript(t, "b", "bravo")
+    out, _ = _build(t, r, incremental=False)
+    _set_mtime(a, out.stat().st_mtime - 100)
+    b.unlink()
+
+    out, _ = _build(t, r, incremental=False)
+
+    assert _ids(out) == ["a"]
