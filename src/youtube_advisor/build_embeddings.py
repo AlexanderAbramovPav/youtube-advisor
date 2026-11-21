@@ -1,10 +1,14 @@
 from __future__ import annotations
+import logging
 import numpy as np
+import os
 import pathlib
 import re
 from fastembed import TextEmbedding
 
 from ._md import parse_frontmatter
+
+log = logging.getLogger(__name__)
 
 CHUNK_WORDS = 750       # ~1000 tokens
 OVERLAP_WORDS = 75
@@ -69,17 +73,73 @@ def _chunks(body: str) -> list[dict]:
     return out
 
 
+def _transcript_ids(transcripts_dir: pathlib.Path) -> dict[str, pathlib.Path]:
+    """video_id -> transcript path, for every transcript with a video_id."""
+    ids: dict[str, pathlib.Path] = {}
+    for md in sorted(transcripts_dir.glob("*.md")):
+        fm, _ = _parse_md(md)
+        vid = fm.get("video_id")
+        if vid:
+            ids[vid] = md
+    return ids
+
+
+def _load_existing(out: pathlib.Path, model_name: str):
+    """Read the stored vectors and offsets for an incremental build.
+
+    Returns (vectors, offsets), or (None, None) when the file must be rebuilt
+    from scratch: it was written with another model, or it can't be read.
+    npz members load lazily, so a damaged member only fails when it is read;
+    the reads therefore sit inside the try as well.
+    """
+    try:
+        with np.load(out, allow_pickle=False) as npz:
+            # A different model means the stored vectors live in another
+            # embedding space: drop them rather than mix incompatible vectors.
+            if str(npz["model"]) != model_name:
+                return None, None
+            vecs, offs = npz["vectors"], npz["offsets"]
+        if vecs.ndim != 2 or len(vecs) != len(offs) or "video_id" not in (offs.dtype.names or ()):
+            raise ValueError(f"inconsistent arrays: vectors {vecs.shape}, offsets {offs.shape}")
+    except Exception as e:
+        log.warning("Could not read %s (%s); rebuilding all embeddings.", out, e)
+        return None, None
+    return vecs, offs
+
+
+def _save_atomic(out: pathlib.Path, **arrays) -> None:
+    """Write the npz to a temp file next to `out`, then swap it in.
+
+    A crash or Ctrl-C during the write leaves the old file untouched. The temp
+    file is opened by us and passed to np.savez as a file object, so numpy does
+    not append its own `.npz` suffix to the name.
+    """
+    tmp = out.with_name(f".{out.stem}.{os.getpid()}.tmp{out.suffix}")
+    try:
+        with open(tmp, "wb") as f:
+            np.savez(f, **arrays)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, out)
+    finally:
+        if tmp.exists():
+            tmp.unlink()
+
+
 def build_embeddings(transcripts_dir: pathlib.Path, refs_dir: pathlib.Path,
                      model_name: str = "BAAI/bge-small-en-v1.5",
                      incremental: bool = False) -> pathlib.Path:
     refs_dir.mkdir(parents=True, exist_ok=True)
     out = refs_dir / "embeddings.npz"
+    on_disk = _transcript_ids(transcripts_dir)
 
     # Fast path: if nothing's changed AND the stored model matches the
     # requested one, skip. When the caller changes --multilingual (bge-m3,
     # 1024-d) vs default (bge-small, 384-d), the stored npz is stale and we
     # MUST rebuild — otherwise search.py reads vectors that don't match
     # corpus_meta.json's embedding_dim and shape errors at query time.
+    # A transcript deleted since the last build (e.g. an update rollback)
+    # also forces a rebuild, so its rows don't linger in search results.
     if out.exists() and not incremental:
         emb_mtime = out.stat().st_mtime
         any_newer = any(p.stat().st_mtime > emb_mtime for p in transcripts_dir.glob("*.md"))
@@ -91,31 +151,37 @@ def build_embeddings(transcripts_dir: pathlib.Path, refs_dir: pathlib.Path,
                     # and forces a rebuild. The stored dim is NOT compared with
                     # the requested model's dim.
                     _ = npz_check["vectors"].shape[1] if npz_check["vectors"].size else None
+                    stored_ids = set(npz_check["offsets"]["video_id"].tolist())
             except Exception:
-                stored_model = None
-            if stored_model == model_name:
+                stored_model, stored_ids = None, set()
+            # Subset, not equality: a transcript without timestamped lines
+            # has no rows, and that must not force a rebuild every time.
+            if stored_model == model_name and stored_ids <= on_disk.keys():
                 return out
 
     model = TextEmbedding(model_name=model_name)
 
-    existing_ids: set[str] = set()
     existing_vec, existing_off = None, None
+    keep_ids: set[str] = set()
     if incremental and out.exists():
-        with np.load(out, allow_pickle=False) as npz:
-            # If the stored model differs from the requested one, the existing
-            # vectors live in the wrong embedding space — drop them and rebuild
-            # everything rather than mixing incompatible vectors.
-            if str(npz["model"]) == model_name:
-                existing_vec, existing_off = npz["vectors"], npz["offsets"]
-                existing_ids = set(existing_off["video_id"].tolist())
+        emb_mtime = out.stat().st_mtime
+        existing_vec, existing_off = _load_existing(out, model_name)
+        if existing_off is not None:
+            stored_ids = set(existing_off["video_id"].tolist())
+            # Keep a transcript's stored rows only if it is still on disk and
+            # has not changed since the last build. Everything else is either
+            # re-embedded below (new or changed) or dropped (deleted).
+            keep_ids = {vid for vid, md in on_disk.items()
+                        if vid in stored_ids and md.stat().st_mtime <= emb_mtime}
+            mask = np.isin(existing_off["video_id"], list(keep_ids))
+            existing_vec, existing_off = existing_vec[mask], existing_off[mask]
 
     new_texts: list[str] = []
     new_offsets: list[tuple] = []
-    for md in sorted(transcripts_dir.glob("*.md")):
-        fm, body = _parse_md(md)
-        vid = fm.get("video_id")
-        if not vid or vid in existing_ids:
+    for vid, md in on_disk.items():
+        if vid in keep_ids:
             continue
+        _, body = _parse_md(md)
         chunks = _chunks(body)
         for i, ch in enumerate(chunks):
             new_texts.append(ch["text"])
@@ -129,6 +195,8 @@ def build_embeddings(transcripts_dir: pathlib.Path, refs_dir: pathlib.Path,
             vecs = np.vstack([existing_vec, vecs])
             offs = np.concatenate([existing_off, offs])
     elif existing_vec is not None:
+        # Nothing new; may be empty (every stored transcript deleted) but
+        # still keeps the stored (0, dim) shape.
         vecs, offs = existing_vec, existing_off
     else:
         # Determine dim from a single-token embed to get the right shape.
@@ -136,5 +204,5 @@ def build_embeddings(transcripts_dir: pathlib.Path, refs_dir: pathlib.Path,
         vecs = np.zeros((0, probe.shape[1]), dtype=np.float16)
         offs = np.zeros((0,), dtype=OFFSET_DTYPE)
 
-    np.savez(out, vectors=vecs, offsets=offs, model=np.array(model_name))
+    _save_atomic(out, vectors=vecs, offsets=offs, model=np.array(model_name))
     return out

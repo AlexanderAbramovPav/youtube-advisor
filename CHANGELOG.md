@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `update` no longer stops on a damaged `embeddings.npz`: it logs a warning and rebuilds all embeddings.
+- `embeddings.npz` is written to a temp file and then moved into place, so a crash during the write keeps the old file intact.
+- Incremental updates re-embed a transcript that changed since the last build, and drop the rows of deleted transcripts so they no longer show up in search.
+- A full rebuild after transcripts were removed (for example, the eval rollback in `update`) no longer reuses the old file with the removed videos in it.
+
 ## [0.1.0] — 2026-06-06
 
 First public beta. Build a Claude Code advisor skill from any YouTube channel.
