@@ -244,6 +244,44 @@ def _ids(npz_path):
         return npz["offsets"]["video_id"].tolist()
 
 
+def _hashes(npz_path):
+    with np.load(npz_path, allow_pickle=False) as npz:
+        if "hashes" not in npz.files:
+            return None
+        h = npz["hashes"]
+        return dict(zip(h["video_id"].tolist(), h["sha256"].tolist()))
+
+
+def _rewrite_npz(path, drop=(), keep_rows=None):
+    """Rewrite the npz without the `drop` members, keeping only the rows whose
+    video_id is in `keep_rows` (all rows when None)."""
+    with np.load(path, allow_pickle=False) as npz:
+        arrays = {k: npz[k] for k in npz.files if k not in drop}
+    if keep_rows is not None:
+        mask = np.isin(arrays["offsets"]["video_id"], list(keep_rows))
+        arrays["vectors"] = arrays["vectors"][mask]
+        arrays["offsets"] = arrays["offsets"][mask]
+    with open(path, "wb") as f:
+        np.savez(f, **arrays)
+
+
+def _make_legacy(path, drop_built_at=False):
+    """Turn a fresh npz into one written before hashes were stored (and,
+    with drop_built_at, before built_at was stored too). Returns built_at."""
+    with np.load(path, allow_pickle=False) as npz:
+        built_at = float(npz["built_at"])
+    _rewrite_npz(path, drop=("hashes", "built_at") if drop_built_at else ("hashes",))
+    return built_at
+
+
+def _full_build_without_model(t, r):
+    """Full build that must not construct the embedding model."""
+    with patch("youtube_advisor.build_embeddings.TextEmbedding") as te:
+        out = build_embeddings(t, r, incremental=False)
+    te.assert_not_called()
+    return out
+
+
 def _corrupt_garbage(path):
     path.write_bytes(b"this is not a zip file")
 
@@ -328,20 +366,40 @@ def test_save_removes_temp_file_left_by_killed_process(tmp_path):
     assert sorted(p.name for p in r.iterdir()) == ["embeddings.npz"]
 
 
-def test_incremental_reembeds_transcript_edited_during_previous_build(tmp_path):
-    """An edit made after the previous build read the transcript, but before
-    it finished writing the npz, must still be picked up next time."""
+def test_incremental_reembeds_content_edited_during_previous_build(tmp_path):
+    """The stored hash describes the text that was embedded, so an edit that
+    lands after the build read the file is picked up next time, whatever the
+    file's mtime says."""
     t, r = tmp_path / "transcripts", tmp_path / "references"
     a = _transcript(t, "a", "alpha")
     out, _ = _build(t, r, incremental=False)
     with np.load(out, allow_pickle=False) as npz:
         built_at = float(npz["built_at"])
-    _set_mtime(a, built_at + 5)     # edited mid-build...
-    _set_mtime(out, built_at + 10)  # ...before the npz write finished
+    a.write_text(a.read_text().replace("alpha", "alpha edited"))
+    _set_mtime(a, built_at - 5)
 
     _, model = _build(t, r, incremental=True)
 
+    assert model.seen == ["alpha edited"]
+
+
+def test_legacy_incremental_reembeds_transcript_newer_than_built_at(tmp_path):
+    """A legacy npz (no hashes) still re-embeds a transcript whose mtime is
+    newer than the stored built_at, and trusts the others."""
+    t, r = tmp_path / "transcripts", tmp_path / "references"
+    a = _transcript(t, "a", "alpha")
+    b = _transcript(t, "b", "bravo")
+    out, _ = _build(t, r, incremental=False)
+    built_at = _make_legacy(out)
+    _set_mtime(a, built_at + 5)     # edited mid-build...
+    _set_mtime(b, built_at - 5)
+    _set_mtime(out, built_at + 10)  # ...before the npz write finished
+
+    out, model = _build(t, r, incremental=True)
+
     assert model.seen == ["alpha"]
+    assert sorted(_ids(out)) == ["a", "b"]
+    assert sorted(_hashes(out)) == ["a", "b"]
 
 
 def test_incremental_embeds_only_new_transcript(tmp_path):
@@ -419,3 +477,169 @@ def test_full_build_fast_path_rebuilds_after_transcript_deleted(tmp_path):
     out, _ = _build(t, r, incremental=False)
 
     assert _ids(out) == ["a"]
+
+
+# ----- content hashes (T888) -----
+
+def test_build_stores_a_hash_for_every_transcript(tmp_path):
+    t, r = tmp_path / "transcripts", tmp_path / "references"
+    _transcript(t, "a", "alpha")
+    # No timestamped lines: no rows, but the hash is still recorded.
+    write_transcript(t, _meta("e"), [], "captions", "en")
+    out, _ = _build(t, r, incremental=False)
+
+    hashes = _hashes(out)
+    assert sorted(hashes) == ["a", "e"]
+    assert all(len(h) == 64 for h in hashes.values())
+    assert _ids(out) == ["a"]
+
+
+@pytest.mark.parametrize("change", ["touch", "rewrite-same-bytes"])
+def test_touch_or_checkout_does_not_reembed(tmp_path, change):
+    """(b) A touch or a git checkout changes mtimes but not content: neither
+    build mode re-embeds anything, and the full build leaves the file alone."""
+    t, r = tmp_path / "transcripts", tmp_path / "references"
+    a = _transcript(t, "a", "alpha")
+    b = _transcript(t, "b", "bravo")
+    out, _ = _build(t, r, incremental=False)
+    future = out.stat().st_mtime + 100
+    for p in (a, b):
+        if change == "rewrite-same-bytes":
+            p.write_bytes(p.read_bytes())   # what a checkout does
+        _set_mtime(p, future)
+    before = out.read_bytes()
+
+    _full_build_without_model(t, r)
+    assert out.read_bytes() == before
+
+    _, model = _build(t, r, incremental=True)
+    assert model.seen == []
+    assert sorted(_ids(out)) == ["a", "b"]
+
+
+@pytest.mark.parametrize("drop_built_at", [False, True],
+                         ids=["with-built_at", "pre-built_at"])
+def test_legacy_incremental_backfills_hashes_without_reembedding(tmp_path, drop_built_at):
+    """(a) An npz written before hashes were stored: the first incremental run
+    trusts its vectors and only records the hashes; the next run then uses
+    them, so a later touch re-embeds nothing."""
+    t, r = tmp_path / "transcripts", tmp_path / "references"
+    a = _transcript(t, "a", "alpha")
+    b = _transcript(t, "b", "bravo")
+    out, _ = _build(t, r, incremental=False)
+    with np.load(out, allow_pickle=False) as npz:
+        vectors_before = npz["vectors"].copy()
+    built_at = _make_legacy(out, drop_built_at=drop_built_at)
+    for p in (a, b):
+        _set_mtime(p, built_at - 100)
+    assert _hashes(out) is None
+
+    out, model = _build(t, r, incremental=True)
+
+    assert model.seen == []
+    assert sorted(_hashes(out)) == ["a", "b"]
+    with np.load(out, allow_pickle=False) as npz:
+        assert np.array_equal(npz["vectors"], vectors_before)
+
+    for p in (a, b):
+        _set_mtime(p, out.stat().st_mtime + 100)
+    _, model = _build(t, r, incremental=True)
+    assert model.seen == []
+
+
+@pytest.mark.parametrize("drop_built_at", [False, True],
+                         ids=["with-built_at", "pre-built_at"])
+def test_legacy_full_build_backfills_hashes_without_model(tmp_path, drop_built_at):
+    """(a) The full-build fast path also records hashes for a legacy npz that
+    is still up to date, without loading the model or touching the vectors."""
+    t, r = tmp_path / "transcripts", tmp_path / "references"
+    a = _transcript(t, "a", "alpha")
+    out, _ = _build(t, r, incremental=False)
+    with np.load(out, allow_pickle=False) as npz:
+        vectors_before = npz["vectors"].copy()
+    built_at = _make_legacy(out, drop_built_at=drop_built_at)
+    _set_mtime(a, built_at - 100)
+
+    _full_build_without_model(t, r)
+
+    assert sorted(_hashes(out)) == ["a"]
+    with np.load(out, allow_pickle=False) as npz:
+        assert np.array_equal(npz["vectors"], vectors_before)
+    # Hashes are in place now: a touch no longer matters.
+    _set_mtime(a, out.stat().st_mtime + 100)
+    _full_build_without_model(t, r)
+
+
+def test_legacy_full_build_compares_with_built_at_not_npz_mtime(tmp_path):
+    """A transcript edited mid-build is newer than built_at but older than
+    the npz file: the fast path must still rebuild."""
+    t, r = tmp_path / "transcripts", tmp_path / "references"
+    a = _transcript(t, "a", "alpha")
+    out, _ = _build(t, r, incremental=False)
+    built_at = _make_legacy(out)
+    _set_mtime(a, built_at + 5)
+    _set_mtime(out, built_at + 10)
+
+    _, model = _build(t, r, incremental=False)
+
+    assert model.seen == ["alpha"]
+
+
+@pytest.mark.parametrize("legacy", [False, True], ids=["hashed", "legacy"])
+@pytest.mark.parametrize("incremental", [False, True], ids=["full", "incremental"])
+def test_transcript_missing_from_npz_is_embedded(tmp_path, legacy, incremental):
+    """(c) A transcript with chunks whose rows are missing from the npz (e.g.
+    restored with `cp -p`, old mtime) is embedded, even if its hash is stored."""
+    t, r = tmp_path / "transcripts", tmp_path / "references"
+    a = _transcript(t, "a", "alpha")
+    b = _transcript(t, "b", "bravo")
+    out, _ = _build(t, r, incremental=False)
+    with np.load(out, allow_pickle=False) as npz:
+        built_at = float(npz["built_at"])
+    _rewrite_npz(out, drop=("hashes",) if legacy else (), keep_rows={"a"})
+    for p in (a, b):
+        _set_mtime(p, built_at - 100)
+
+    out, model = _build(t, r, incremental=incremental)
+
+    assert "bravo" in model.seen
+    if incremental:
+        assert model.seen == ["bravo"]
+    assert sorted(_ids(out)) == ["a", "b"]
+
+
+def test_full_build_embeds_new_transcript_with_old_mtime(tmp_path):
+    t, r = tmp_path / "transcripts", tmp_path / "references"
+    _transcript(t, "a", "alpha")
+    out, _ = _build(t, r, incremental=False)
+    b = _transcript(t, "b", "bravo")
+    _set_mtime(b, out.stat().st_mtime - 100)
+
+    out, model = _build(t, r, incremental=False)
+
+    assert "bravo" in model.seen
+    assert sorted(_ids(out)) == ["a", "b"]
+
+
+def test_transcript_without_chunks_does_not_force_rebuild(tmp_path):
+    t, r = tmp_path / "transcripts", tmp_path / "references"
+    _transcript(t, "a", "alpha")
+    write_transcript(t, _meta("e"), [], "captions", "en")
+    _build(t, r, incremental=False)
+
+    _full_build_without_model(t, r)
+    _, model = _build(t, r, incremental=True)
+    assert model.seen == []
+
+
+def test_chunking_change_reembeds(tmp_path):
+    """The hash covers the chunking parameters: new chunk sizes re-embed."""
+    t, r = tmp_path / "transcripts", tmp_path / "references"
+    _transcript(t, "a", "alpha " * 30)
+    _build(t, r, incremental=False)
+
+    with patch("youtube_advisor.build_embeddings.CHUNK_WORDS", 10), \
+         patch("youtube_advisor.build_embeddings.OVERLAP_WORDS", 2):
+        _, model = _build(t, r, incremental=True)
+
+    assert len(model.seen) > 1
