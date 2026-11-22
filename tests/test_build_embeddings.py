@@ -643,3 +643,14 @@ def test_chunking_change_reembeds(tmp_path):
         _, model = _build(t, r, incremental=True)
 
     assert len(model.seen) > 1
+
+
+def test_chunker_version_bump_reembeds(tmp_path):
+    t, r = tmp_path / "transcripts", tmp_path / "references"
+    _transcript(t, "a", "alpha")
+    _build(t, r, incremental=False)
+
+    with patch("youtube_advisor.build_embeddings.CHUNKER_VERSION", 999):
+        _, model = _build(t, r, incremental=True)
+
+    assert model.seen == ["alpha"]

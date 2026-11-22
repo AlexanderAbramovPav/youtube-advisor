@@ -16,6 +16,9 @@ log = logging.getLogger(__name__)
 
 CHUNK_WORDS = 750       # ~1000 tokens
 OVERLAP_WORDS = 75
+# Bump when _chunks() changes how it splits or joins text: it is part of the
+# content hash, so every transcript is re-embedded on the next build.
+CHUNKER_VERSION = 1
 
 OFFSET_DTYPE = np.dtype([
     ("video_id", "U16"),
@@ -88,8 +91,9 @@ class _Transcript(NamedTuple):
 def _content_hash(body: str) -> str:
     """Hash of what the embeddings are computed from: the transcript body and
     the chunking parameters. A `touch` or a git checkout keeps it; an edit to
-    the body or a new CHUNK_WORDS / OVERLAP_WORDS changes it."""
-    h = hashlib.sha256(f"chunks:{CHUNK_WORDS}:{OVERLAP_WORDS}\n".encode())
+    the body, a new CHUNK_WORDS / OVERLAP_WORDS or a CHUNKER_VERSION bump
+    changes it."""
+    h = hashlib.sha256(f"chunks:v{CHUNKER_VERSION}:{CHUNK_WORDS}:{OVERLAP_WORDS}\n".encode())
     h.update(body.encode("utf-8"))
     return h.hexdigest()
 
