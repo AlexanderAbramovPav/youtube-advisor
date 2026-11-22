@@ -7,7 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Embedding builds now spot changed transcripts by a hash of their content. The hashes are stored in `embeddings.npz`, so a `git checkout` or `touch` no longer re-embeds the corpus. An `embeddings.npz` written by an older version gets its hashes on the next run, and its vectors are kept rather than recomputed. Only transcripts newer than that file's last build are re-embedded. To force a full re-embed, delete `references/embeddings.npz`.
+
 ### Fixed
+- A full build now embeds a transcript that has no rows in `embeddings.npz` even when its mtime is old, for example a file restored with `cp -p`.
 - `update` no longer stops on a damaged `embeddings.npz`: it logs a warning and rebuilds all embeddings.
 - `embeddings.npz` is written to a temp file and then moved into place, so a crash during the write keeps the old file intact.
 - Incremental updates re-embed a transcript that changed since the last build, and drop the rows of deleted transcripts so they no longer show up in search.
