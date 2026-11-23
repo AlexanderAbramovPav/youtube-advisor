@@ -398,9 +398,9 @@ def test_block_with_parallel_workers_sends_no_new_requests(tmp_path):
     real_block = orch._RunState.block
 
     def recording_block(self, tier_name, e):
+        real_block(self, tier_name, e)   # stop flag is set from here on
         with lock:
             at_block.append(len(started))
-        real_block(self, tier_name, e)
 
     def t1_side(vid):
         with lock:

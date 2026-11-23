@@ -255,7 +255,10 @@ def run(*, advisor_dir, since=None, max_n=None, ids=None,
     guide = update_guide(out, summary.get("ingested", 0),
                          len(missing) if prune else 0, eval_summary)
     if summary.get("blocked"):
-        guide += "\n" + blocked_message(summary, out) + "\n"
+        # Carry the flags this run skipped into the printed retry command.
+        skipped = [f for f, on in (("--regen-skill-md", regen_skill_md),
+                                   ("--run-evals", run_evals_)) if on]
+        guide += "\n" + " ".join([blocked_message(summary, out), *skipped]) + "\n"
     return {
         "guide": guide,
         "evals": eval_summary,

@@ -216,6 +216,8 @@ If `youtube-advisor` is not installed (`which youtube-advisor` fails), do the in
 
 If you see HTTP 429 / "Sign in to confirm you're not a bot" / `_extract_player_response failed` errors, YT's anti-bot is rate-limiting this IP. yt-dlp invocations already pass `--remote-components ejs:github` (the EJS JS-challenge solver) and `--extractor-args youtube:formats=missing_pot` (PO-token tolerance) by default — but the EJS solver needs **`deno`** on PATH at runtime. If `which deno` fails, install via `brew install deno` (macOS) or `curl -fsSL https://deno.land/install.sh | sh` (Linux) and retry. If you're still blocked after that, two more fixes:
 
+**Exit code 1 with "YouTube blocked requests":** `bootstrap` / `update` stopped at the first block: no further YouTube requests and no Whisper fallback for the blocked video. The advisor is partial but resumable; the blocked video (`failed:blocked` in `ingest.errors.log`) and the videos not tried yet are retried by the next update. Show the user the printed message, then run the printed `youtube-advisor update …` command after a wait or with cookies (below). After a blocked bootstrap, do not draft SKILL.md from `.pending-llm-draft.json` until an update finishes without a block.
+
 **Option 1 — Use your logged-in browser cookies (recommended):**
 Pass `--cookies-from-browser chrome` (or `firefox`, `safari`, `brave`, `edge`). yt-dlp reads cookies straight from the browser profile — no copy-paste. With cookies set, the captions pool stays at concurrency 8.
 

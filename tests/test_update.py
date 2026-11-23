@@ -275,8 +275,11 @@ def test_blocked_update_skips_skill_regen_and_evals(tmp_path):
          patch("youtube_advisor.update.run_ingest", side_effect=_blocked_ingest_writing("c")), \
          patch("youtube_advisor.gen_skill_md.generate") as gen, \
          patch("youtube_advisor.update.run_evals") as evals:
-        run(advisor_dir=str(out), yes=True, regen_skill_md=True, run_evals_=True, no_llm=False)
+        result = run(advisor_dir=str(out), yes=True, regen_skill_md=True,
+                     run_evals_=True, no_llm=False)
     gen.assert_not_called()
+    assert (f"youtube-advisor update --advisor {out} --yes --regen-skill-md --run-evals"
+            in result["guide"])
     evals.assert_not_called()
     meta = json.loads((out / "references" / "corpus_meta.json").read_text())
     # Failures are not corpus sources.
