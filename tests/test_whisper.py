@@ -158,3 +158,16 @@ def test_transcribe_real_short_video(tmp_path):
     segs, lang = wh.transcribe_audio("dQw4w9WgXcQ")
     assert len(segs) > 0
     assert lang
+
+
+def test_download_audio_block_raises_captions_blocked(tmp_path, monkeypatch):
+    """A 429 on the audio download is a block, not 'no captions'."""
+    from youtube_advisor.ingest.captions_api import CaptionsBlocked
+    monkeypatch.setattr(wh, "AUDIO_CACHE", tmp_path)
+    def fake_run(cmd, *a, **kw):
+        return subprocess.CompletedProcess(
+            args=cmd, returncode=1, stdout="",
+            stderr="ERROR: unable to download video data: HTTP Error 429: Too Many Requests")
+    monkeypatch.setattr("youtube_advisor.ingest.whisper.subprocess.run", fake_run)
+    with pytest.raises(CaptionsBlocked):
+        wh._download_audio("abc")

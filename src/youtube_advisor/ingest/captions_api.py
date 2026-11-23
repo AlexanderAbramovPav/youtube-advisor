@@ -4,13 +4,32 @@ from typing import Optional
 
 import requests
 from youtube_transcript_api import YouTubeTranscriptApi
-from youtube_transcript_api._errors import CouldNotRetrieveTranscript
+from youtube_transcript_api._errors import CouldNotRetrieveTranscript, RequestBlocked
 
 
 class NoCaptionsAvailable(Exception):
     def __init__(self, video_id: str):
         self.video_id = video_id
         super().__init__(video_id)
+
+
+class CaptionsBlocked(Exception):
+    """YouTube refused the request (HTTP 429, IP block, bot check).
+
+    This says nothing about whether the video has captions, so it must never be
+    treated like NoCaptionsAvailable: the video is retried on a later run and
+    the current run stops sending requests to YouTube.
+
+    ``authenticated`` is True when the blocked request carried the user's
+    cookies. An unauthenticated block can still be worked around by a tier
+    that does send cookies (yt-dlp with ``--cookies-from-browser``).
+    """
+
+    def __init__(self, video_id: str, detail: str = "", authenticated: bool = False):
+        self.video_id = video_id
+        self.detail = detail
+        self.authenticated = authenticated
+        super().__init__(f"{video_id}: {detail}" if detail else video_id)
 
 
 def _build_http_client(cookies: Optional[dict]) -> Optional[requests.Session]:
@@ -56,11 +75,17 @@ def fetch_captions(
 
     Raises:
         NoCaptionsAvailable: if no captions exist for the video.
+        CaptionsBlocked: if YouTube blocked the request (RequestBlocked or its
+            subclass IpBlocked; youtube-transcript-api maps HTTP 429 to
+            IpBlocked).
     """
     http_client = _build_http_client(cookies)
+    authenticated = http_client is not None
     try:
         api = YouTubeTranscriptApi(http_client=http_client) if http_client else YouTubeTranscriptApi()
         listing = api.list(video_id)
+    except RequestBlocked as e:
+        raise CaptionsBlocked(video_id, type(e).__name__, authenticated=authenticated) from e
     except CouldNotRetrieveTranscript:
         raise NoCaptionsAvailable(video_id)
 
@@ -86,7 +111,10 @@ def fetch_captions(
         )
     )
     t = candidates[0]
-    fetched = t.fetch()
+    try:
+        fetched = t.fetch()
+    except RequestBlocked as e:
+        raise CaptionsBlocked(video_id, type(e).__name__, authenticated=authenticated) from e
     # FetchedTranscript.to_raw_data() returns list[dict] with text/start/duration keys.
     segs = fetched.to_raw_data()
     return segs, t.language_code

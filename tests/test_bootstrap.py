@@ -296,3 +296,58 @@ def test_bootstrap_auto_detects_present_api_key(tmp_path, mock_no_llm_pipeline, 
     mock_no_llm_pipeline["gen_bench"].assert_called_once()
     mock_no_llm_pipeline["run_evals"].assert_called_once()
     assert not (out / ".pending-llm-draft.json").exists()
+
+
+# ----- YouTube block during ingest -----
+
+_BLOCKED_SUMMARY = {
+    "ingested": 0, "skipped": 0, "failed": 1,
+    "by_source": {"failed:blocked": 1},
+    "blocked": True, "not_attempted": 2, "block_detail": "tier1: a: IpBlocked",
+}
+
+
+@pytest.mark.parametrize("no_llm", [False, True])
+def test_block_leaves_resumable_advisor_and_skips_llm(tmp_path, mock_no_llm_pipeline, no_llm):
+    """A block on the first video leaves 0 transcripts. Bootstrap still writes
+    the state that lets a re-run resume (selection_filter.yaml, corpus_meta),
+    spends no LLM calls on the partial corpus, and returns the retry command."""
+    from youtube_advisor.bootstrap import run_ingest as patched_ingest
+    patched_ingest.side_effect = lambda *a, **kw: dict(_BLOCKED_SUMMARY)
+    out = tmp_path / "yc-advisor"
+    result = run(**_base_kwargs(out, no_llm=no_llm))
+    mock_no_llm_pipeline["gen_skill"].assert_not_called()
+    mock_no_llm_pipeline["gen_bench"].assert_not_called()
+    mock_no_llm_pipeline["run_evals"].assert_not_called()
+    assert result["summary"]["blocked"] is True
+    assert (out / "references" / "selection_filter.yaml").exists()
+    assert (out / "references" / "corpus_meta.json").exists()
+    assert (out / "SKILL.md").exists()
+    assert (out / ".pending-llm-draft.json").exists()
+    assert f"youtube-advisor update --advisor {out} --yes --regen-skill-md" in result["guide"]
+    assert "1 video(s) blocked, 2 not tried yet" in result["guide"]
+    progress = json.loads((out / ".progress.json").read_text())
+    assert progress["stage"] == "blocked"
+
+
+def test_cli_bootstrap_exits_nonzero_on_block(tmp_path):
+    from click.testing import CliRunner
+    from youtube_advisor.cli import main
+    with patch("youtube_advisor.cli.bs_mod.run",
+               return_value={"guide": "GUIDE-TEXT", "summary": dict(_BLOCKED_SUMMARY)}):
+        res = CliRunner().invoke(main, ["bootstrap", "--channel", "@yc",
+                                        "--out", str(tmp_path / "x"), "--yes"])
+    assert res.exit_code == 1
+    assert "GUIDE-TEXT" in res.output
+    assert "YouTube blocked requests" in res.output
+
+
+def test_cli_bootstrap_exits_zero_without_block(tmp_path):
+    from click.testing import CliRunner
+    from youtube_advisor.cli import main
+    with patch("youtube_advisor.cli.bs_mod.run",
+               return_value={"guide": "GUIDE-TEXT",
+                             "summary": {"ingested": 1, "failed": 0, "by_source": {}}}):
+        res = CliRunner().invoke(main, ["bootstrap", "--channel", "@yc",
+                                        "--out", str(tmp_path / "x"), "--yes"])
+    assert res.exit_code == 0, res.output

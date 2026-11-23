@@ -9,7 +9,7 @@ import yaml
 from ._cookies import resolve_cookies
 from .filters import FilterConfig, apply_filters
 from .fetch_channel import resolve_channel, resolve_video
-from .ingest.orchestrator import run_ingest
+from .ingest.orchestrator import blocked_message, run_ingest
 from .build_index import build_index
 from .build_embeddings import build_embeddings
 from .eval_runner import run as run_evals
@@ -234,9 +234,16 @@ def run(*, advisor_dir, since=None, max_n=None, ids=None,
                 return {
                     "guide": f"⟲ Rolled back {len(new_videos)} new videos due to eval regression.\n",
                     "evals": eval_summary,
+                    "summary": summary,
                 }
 
+    # Count what actually landed: failed or blocked videos are not in the corpus.
+    guide = update_guide(out, summary.get("ingested", 0),
+                         len(missing) if prune else 0, eval_summary)
+    if summary.get("blocked"):
+        guide += "\n" + blocked_message(summary, out) + "\n"
     return {
-        "guide": update_guide(out, len(new_videos), len(missing) if prune else 0, eval_summary),
+        "guide": guide,
         "evals": eval_summary,
+        "summary": summary,
     }

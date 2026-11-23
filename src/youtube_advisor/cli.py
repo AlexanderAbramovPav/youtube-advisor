@@ -9,6 +9,14 @@ def main():
     """youtube-advisor: build & update Claude Code advisor skills from YouTube channels."""
 
 
+def _exit_if_blocked(result: dict) -> None:
+    """Exit 1 when ingest stopped on a YouTube block (the guide already says why)."""
+    if (result.get("summary") or {}).get("blocked"):
+        raise click.ClickException(
+            "ingest stopped: YouTube blocked requests; see the retry command above."
+        )
+
+
 @main.command()
 @click.option("--channel", "channels", multiple=True, required=True,
               help="Channel URL or @handle (repeatable).")
@@ -58,6 +66,7 @@ def bootstrap(**kw):
     """Create a new advisor skill from a YouTube channel."""
     out = bs_mod.run(**kw)
     click.echo(out["guide"])
+    _exit_if_blocked(out)
 
 
 @main.command()
@@ -84,6 +93,7 @@ def update(**kw):
     from . import update as up_mod
     result = up_mod.run(**kw)
     click.echo(result["guide"])
+    _exit_if_blocked(result)
 
 
 @main.command()

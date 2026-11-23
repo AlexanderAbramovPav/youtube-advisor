@@ -3,8 +3,43 @@ import pathlib
 import re
 import subprocess
 import tempfile
-from .captions_api import NoCaptionsAvailable
+from .captions_api import CaptionsBlocked, NoCaptionsAvailable
 from .._cookies import ytdlp_args
+
+# yt-dlp stderr fragments that mean YouTube refused this client, not that the
+# video lacks subtitles. Matched case-insensitively. "not a bot" comes from
+# "Sign in to confirm you're not a bot" (the apostrophe may be curly, so it is
+# left out); "Sign in to confirm your age" is an age gate and must not match.
+_BLOCK_MARKERS = (
+    "http error 429",
+    "too many requests",
+    "not a bot",
+    "rate-limited by youtube",
+    "try again later",
+    "captcha challenge",
+)
+
+
+class YtDlpFailed(RuntimeError):
+    """yt-dlp exited non-zero for a reason other than a block (video private
+    or unavailable, age gate, network error). Not evidence of missing captions,
+    so the orchestrator records it as failed instead of escalating to Whisper."""
+
+
+def block_reason(stderr: str | None) -> str | None:
+    """Return the yt-dlp error line that shows a YouTube block, else None."""
+    for line in (stderr or "").splitlines():
+        low = line.lower()
+        if any(m in low for m in _BLOCK_MARKERS):
+            return line.strip()
+    return None
+
+
+def _last_error_line(stderr: str | None) -> str:
+    lines = [ln.strip() for ln in (stderr or "").splitlines() if ln.strip()]
+    errors = [ln for ln in lines if ln.startswith("ERROR")]
+    return (errors or lines or ["no stderr"])[-1]
+
 
 _TS = re.compile(r"^(\d{2}):(\d{2}):(\d{2})\.(\d{3})\s*-->\s*(\d{2}):(\d{2}):(\d{2})\.(\d{3})")
 
@@ -48,9 +83,18 @@ def fetch_captions(
             "--sub-lang", f"{lang_pref}.*,en.*", "--sub-format", "vtt",
             "--skip-download", "-o", out_tpl, url,
         ]
-        subprocess.run(cmd, capture_output=True, text=True)
+        r = subprocess.run(cmd, capture_output=True, text=True)
         vtts = list(pathlib.Path(td).glob("*.vtt"))
         if not vtts:
+            # Order matters: a block can come with exit code 0 (yt-dlp may
+            # only warn about a failed subtitle download), and a non-zero
+            # exit without a block is some other failure. Only a clean run
+            # that wrote nothing means the video has no subtitles.
+            reason = block_reason(r.stderr)
+            if reason:
+                raise CaptionsBlocked(video_id, reason, authenticated=bool(cookies))
+            if r.returncode != 0:
+                raise YtDlpFailed(f"yt-dlp exit {r.returncode}: {_last_error_line(r.stderr)}")
             raise NoCaptionsAvailable(video_id)
 
         # Prefer language match first, then larger size as tiebreaker. yt-dlp
