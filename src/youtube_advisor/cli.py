@@ -126,7 +126,7 @@ def status(advisor_dir):
     parts.append(mm)
     if eta is not None and eta > 0:
         parts.append(f"ETA {eta//60:02d}:{eta%60:02d}")
-    if msg and stage in {"init", "resolving", "filtering", "drafting", "evals", "done"}:
+    if msg and stage in {"init", "resolving", "filtering", "drafting", "evals", "done", "blocked"}:
         parts.append("· " + msg[:60])
     click.echo(" · ".join(parts))
 

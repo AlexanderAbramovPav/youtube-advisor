@@ -419,3 +419,14 @@ def test_block_with_parallel_workers_sends_no_new_requests(tmp_path):
     attempted = summary["ingested"] + summary["failed"]
     assert attempted == len(started)
     assert attempted + summary["not_attempted"] == 30
+
+
+def test_no_polite_sleep_for_videos_queued_after_block(tmp_path):
+    """Without cookies each request is preceded by a polite sleep; after a
+    block the queued videos must return at once, not sleep first."""
+    with patch(_SLEEP) as sleep, \
+         patch(_T1, side_effect=CaptionsBlocked("a", "IpBlocked")):
+        summary = run_ingest([_vid(f"v{i}") for i in range(10)], tmp_path / "tx",
+                             max_concurrent=1)
+    assert sleep.call_count == 1
+    assert summary["not_attempted"] == 9

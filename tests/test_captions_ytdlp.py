@@ -110,7 +110,6 @@ def _run_returning(rc, stderr):
 
 @pytest.mark.parametrize("rc,stderr", [
     (1, "ERROR: Unable to download video subtitles for 'en': HTTP Error 429: Too Many Requests"),
-    (0, "WARNING: Unable to download video subtitles for 'en': HTTP Error 429: Too Many Requests"),
     (1, "ERROR: [youtube] abc: Sign in to confirm you’re not a bot. Use --cookies-from-browser"),
     (1, "ERROR: [youtube] abc: This content isn't available, try again later. The current "
         "session has been rate-limited by YouTube for up to an hour."),
@@ -154,3 +153,18 @@ def test_written_vtt_wins_over_nonzero_exit(monkeypatch, fixtures_dir):
 def test_block_reason_ignores_normal_output():
     assert block_reason("[info] There are no subtitles for the requested languages") is None
     assert block_reason(None) is None
+
+
+def test_recovered_429_warning_with_clean_exit_is_no_captions(monkeypatch):
+    """A 429 WARNING that a yt-dlp retry got past is not a block: exit 0 and
+    no VTT means the video has no subtitles."""
+    monkeypatch.setattr("youtube_advisor.ingest.captions_ytdlp.subprocess.run",
+                        _run_returning(0, "WARNING: [youtube] abc: HTTP Error 429: "
+                                          "Too Many Requests. Retrying (1/5)..."))
+    with pytest.raises(NoCaptionsAvailable):
+        fetch_captions("abc")
+
+
+def test_try_again_later_outside_rate_limit_text_is_not_a_block():
+    assert block_reason("ERROR: [youtube] abc: Something failed, please try again later") is None
+    assert block_reason("WARNING: HTTP Error 429: Too Many Requests") is None

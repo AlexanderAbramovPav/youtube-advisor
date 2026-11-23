@@ -351,3 +351,26 @@ def test_cli_bootstrap_exits_zero_without_block(tmp_path):
         res = CliRunner().invoke(main, ["bootstrap", "--channel", "@yc",
                                         "--out", str(tmp_path / "x"), "--yes"])
     assert res.exit_code == 0, res.output
+
+
+def test_resume_into_existing_advisor_passes_cookies_to_update(tmp_path):
+    out = tmp_path / "yc-advisor"
+    (out / "references").mkdir(parents=True)
+    (out / "references" / "selection_filter.yaml").write_text("version: 1\n")
+    with patch("youtube_advisor.update.run", return_value={"guide": "G"}) as up:
+        run(**_base_kwargs(out, cookies_from_browser="chrome", no_llm=True))
+    kw = up.call_args.kwargs
+    assert kw["cookies_from_browser"] == "chrome"
+    assert kw["no_llm"] is True
+    assert kw["advisor_dir"] == str(out)
+
+
+def test_meta_records_intent_and_counts_only_landed_videos(tmp_path, mock_pipeline):
+    out = tmp_path / "yc-advisor"
+    with patch("youtube_advisor.bootstrap.run_ingest",
+               return_value={"ingested": 2, "skipped": 0, "failed": 1,
+                             "by_source": {"captions": 2, "failed:YtDlpFailed": 1}}):
+        run(**_base_kwargs(out))
+    meta = json.loads((out / "references" / "corpus_meta.json").read_text())
+    assert meta["n_videos"] == 2
+    assert meta["user_intent"] == "test"

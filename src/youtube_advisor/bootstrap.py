@@ -295,7 +295,9 @@ def run(*, channels, since, until, max_n, playlists, title_include, title_exclud
             if not click.confirm(f"{out} is not empty. Switch to update mode?", default=True):
                 raise click.Abort()
         from .update import run as _update
-        return _update(advisor_dir=str(out), yes=True)
+        return _update(advisor_dir=str(out), yes=True, no_llm=no_llm,
+                       cookies_from_browser=cookies_from_browser,
+                       cookies_file=cookies_file)
 
     out.mkdir(parents=True, exist_ok=True)
     prog = Progress(out)
@@ -388,7 +390,9 @@ def run(*, channels, since, until, max_n, playlists, title_include, title_exclud
     )
     meta = {
         "corpus_version": f"{date.today().isoformat()}/{n}",
-        "n_videos": n,
+        # Count what landed, not what was selected: failed or blocked videos
+        # have no transcript.
+        "n_videos": n - summary.get("failed", 0) - summary.get("not_attempted", 0),
         "channels": list(channels) + list(playlists),
         "date_range": date_range,
         "corpus_language": corpus_lang,
@@ -401,6 +405,8 @@ def run(*, channels, since, until, max_n, playlists, title_include, title_exclud
         "last_update": now_iso,
         "latest_video_date": max(pub_dates) if pub_dates else "",
         "generator_version": "0.1.0",
+        # Kept so `update --regen-skill-md` re-drafts for the same intent.
+        "user_intent": intent or "",
     }
     (out / "references").mkdir(parents=True, exist_ok=True)
     (out / "references" / "corpus_meta.json").write_text(

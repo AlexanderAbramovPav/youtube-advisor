@@ -71,6 +71,8 @@ def _ingest_one(
                                 ("tier2", "captions", tier2.fetch_captions)]:
         if tier_name == "tier1" and state.skip_tier1.is_set():
             continue
+        if state.stop.is_set():
+            return NOT_ATTEMPTED
         try:
             if polite_sleep:
                 # Stagger captions API calls to avoid IP-level rate-limit when

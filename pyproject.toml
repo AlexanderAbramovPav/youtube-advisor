@@ -23,7 +23,7 @@ classifiers = [
 ]
 dependencies = [
     "yt-dlp>=2024.5.0",
-    "youtube-transcript-api>=0.6.2",
+    "youtube-transcript-api>=1.0.0",
     "fastembed>=0.3.0",
     "rank-bm25>=0.2.2",
     "numpy>=1.26",
