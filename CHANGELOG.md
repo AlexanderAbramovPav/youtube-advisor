@@ -8,9 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- Requires `youtube-transcript-api>=1.0.0`, the first version with `RequestBlocked` / `IpBlocked` and the `YouTubeTranscriptApi().list()` API already in use.
 - Embedding builds now spot changed transcripts by a hash of their content. The hashes are stored in `embeddings.npz`, so a `git checkout` or `touch` no longer re-embeds the corpus. An `embeddings.npz` written by an older version gets its hashes on the next run, and its vectors are kept rather than recomputed. Only transcripts newer than that file's last build are re-embedded. To force a full re-embed, delete `references/embeddings.npz`.
 
 ### Fixed
+- A YouTube block (HTTP 429, `IpBlocked` / `RequestBlocked`, "Sign in to confirm you're not a bot", "rate-limited by YouTube") is no longer treated as "no captions". The run sends no more requests to YouTube and never falls back to Whisper for a blocked video. The blocked video is logged as `failed:blocked`, videos not tried yet are left alone, and the next `update` retries both. `bootstrap` and `update` print the retry command and exit with code 1. With `--cookies-from-browser`, a block on the cookie-less captions API falls back to yt-dlp with your cookies; a block there stops the run as well.
+- A yt-dlp captions run that exits non-zero for another reason (private or unavailable video, age gate, network error) is recorded as `failed:YtDlpFailed` and no longer sent to Whisper.
+- `update` counts only the videos that actually landed in its "+N new videos" line.
+- A blocked `update` skips `--regen-skill-md` and `--run-evals` rather than spending LLM calls on a partial corpus. Failed videos are no longer added to `transcript_source_counts`.
+- `update --regen-skill-md` drafts for the intent given to `bootstrap` (now stored in `corpus_meta.json`), not "(regenerated)". It also removes a leftover `.pending-llm-draft.json` once the LLM draft is written.
+- Re-running `bootstrap` into an existing advisor passes `--cookies-from-browser` / `--cookies` and `--no-llm` on to update mode.
+- `corpus_meta.json` `n_videos` from `bootstrap` counts only the videos that were ingested.
 - A full build now embeds a transcript that has no rows in `embeddings.npz` even when its mtime is old, for example a file restored with `cp -p`.
 - `update` no longer stops on a damaged `embeddings.npz`: it logs a warning and rebuilds all embeddings.
 - `embeddings.npz` is written to a temp file and then moved into place, so a crash during the write keeps the old file intact.

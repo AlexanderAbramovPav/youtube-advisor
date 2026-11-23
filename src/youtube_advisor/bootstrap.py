@@ -11,7 +11,7 @@ from ._cookies import resolve_cookies
 from ._progress import Progress
 from .filters import FilterConfig, apply_filters
 from .fetch_channel import resolve_channel
-from .ingest.orchestrator import run_ingest
+from .ingest.orchestrator import blocked_message, run_ingest
 from .build_index import build_index
 from .build_embeddings import build_embeddings
 from .gen_skill_md import generate as gen_skill
@@ -295,7 +295,9 @@ def run(*, channels, since, until, max_n, playlists, title_include, title_exclud
             if not click.confirm(f"{out} is not empty. Switch to update mode?", default=True):
                 raise click.Abort()
         from .update import run as _update
-        return _update(advisor_dir=str(out), yes=True)
+        return _update(advisor_dir=str(out), yes=True, no_llm=no_llm,
+                       cookies_from_browser=cookies_from_browser,
+                       cookies_file=cookies_file)
 
     out.mkdir(parents=True, exist_ok=True)
     prog = Progress(out)
@@ -388,7 +390,9 @@ def run(*, channels, since, until, max_n, playlists, title_include, title_exclud
     )
     meta = {
         "corpus_version": f"{date.today().isoformat()}/{n}",
-        "n_videos": n,
+        # Count what landed, not what was selected: failed or blocked videos
+        # have no transcript.
+        "n_videos": n - summary.get("failed", 0) - summary.get("not_attempted", 0),
         "channels": list(channels) + list(playlists),
         "date_range": date_range,
         "corpus_language": corpus_lang,
@@ -401,6 +405,8 @@ def run(*, channels, since, until, max_n, playlists, title_include, title_exclud
         "last_update": now_iso,
         "latest_video_date": max(pub_dates) if pub_dates else "",
         "generator_version": "0.1.0",
+        # Kept so `update --regen-skill-md` re-drafts for the same intent.
+        "user_intent": intent or "",
     }
     (out / "references").mkdir(parents=True, exist_ok=True)
     (out / "references" / "corpus_meta.json").write_text(
@@ -430,6 +436,36 @@ def run(*, channels, since, until, max_n, playlists, title_include, title_exclud
     effective_no_llm = should_skip_llm(no_llm)
 
     channel_display = ", ".join(list(channels) + list(playlists))
+
+    if summary.get("blocked"):
+        # YouTube blocked the run part-way. Steps 6-12 above already wrote a
+        # resumable advisor (re-running bootstrap here switches to update
+        # mode). Don't spend LLM calls drafting SKILL.md or evals from a
+        # partial corpus: write the stub + AI hand-off instead, and let the
+        # CLI exit non-zero with the retry command.
+        _write_stub_skill(
+            out,
+            meta=meta,
+            user_intent=intent or "",
+            answer_language=answer_language,
+            quote_style=qs,
+            channel_display_name=channel_display,
+        )
+        _write_pending_llm_draft(
+            out,
+            meta=meta,
+            user_intent=intent or "",
+            answer_language=answer_language,
+            quote_style=qs,
+            channel_display_name=channel_display,
+        )
+        prog.stage("blocked", message="YouTube blocked requests; re-run update later")
+        return {
+            "guide": blocked_message(summary, out)
+            + " --regen-skill-md\n",
+            "meta": meta,
+            "summary": summary,
+        }
 
     if effective_no_llm:
         # Skip LLM-driven steps. Write stub SKILL.md + hand-off file for the

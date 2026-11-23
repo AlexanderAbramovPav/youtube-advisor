@@ -93,3 +93,47 @@ def test_no_captions_raises_when_transcripts_disabled():
         MockApi.return_value.list.side_effect = TranscriptsDisabled("vid")
         with pytest.raises(NoCaptionsAvailable):
             fetch_captions("vid")
+
+
+# ----- blocks -----
+
+from youtube_transcript_api._errors import IpBlocked, RequestBlocked  # noqa: E402
+from youtube_advisor.ingest.captions_api import CaptionsBlocked  # noqa: E402
+
+
+@pytest.mark.parametrize("exc", [IpBlocked, RequestBlocked])
+def test_list_block_raises_captions_blocked_not_no_captions(exc):
+    with patch("youtube_advisor.ingest.captions_api.YouTubeTranscriptApi") as MockApi:
+        MockApi.return_value.list.side_effect = exc("vid")
+        with pytest.raises(CaptionsBlocked) as ei:
+            fetch_captions("vid")
+    assert not isinstance(ei.value, NoCaptionsAvailable)
+    assert ei.value.authenticated is False
+    assert exc.__name__ in str(ei.value)
+
+
+def test_fetch_block_raises_captions_blocked():
+    t = _fake_transcript("en", False, [])
+    t.fetch.side_effect = IpBlocked("vid")
+    listing = _fake_listing(manual={"en": t}, generated={})
+    with patch("youtube_advisor.ingest.captions_api.YouTubeTranscriptApi") as MockApi:
+        MockApi.return_value.list.return_value = listing
+        with pytest.raises(CaptionsBlocked):
+            fetch_captions("vid")
+
+
+def test_block_with_cookie_file_session_is_authenticated():
+    with patch("youtube_advisor.ingest.captions_api._build_http_client",
+               return_value=MagicMock()), \
+         patch("youtube_advisor.ingest.captions_api.YouTubeTranscriptApi") as MockApi:
+        MockApi.return_value.list.side_effect = IpBlocked("vid")
+        with pytest.raises(CaptionsBlocked) as ei:
+            fetch_captions("vid", cookies={"file": "/x/cookies.txt"})
+    assert ei.value.authenticated is True
+
+
+def test_transcripts_disabled_is_still_no_captions():
+    with patch("youtube_advisor.ingest.captions_api.YouTubeTranscriptApi") as MockApi:
+        MockApi.return_value.list.side_effect = TranscriptsDisabled("vid")
+        with pytest.raises(NoCaptionsAvailable):
+            fetch_captions("vid")

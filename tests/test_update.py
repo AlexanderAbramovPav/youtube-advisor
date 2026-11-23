@@ -209,3 +209,101 @@ def test_run_normalises_datetime_since_to_date_isoformat(tmp_path):
         run(advisor_dir=str(out), since=_dt(2026, 1, 1, 12, 30), yes=True)
     filt = yaml.safe_load((out / "references" / "selection_filter.yaml").read_text())
     assert filt["since"] == "2026-01-01"
+
+
+# ----- YouTube block during ingest -----
+
+def test_block_keeps_index_work_reports_retry_and_next_run_retries(tmp_path):
+    """c lands, d is blocked: the index is still rebuilt for c, the guide
+    counts only what landed and carries the retry command, and the next
+    update hands d to run_ingest again (no --reingest flag needed)."""
+    out = _setup_advisor(tmp_path, existing_ids=("a", "b"))
+    listing = [_stub_video(v) for v in ("a", "b", "c", "d")]
+
+    def blocked_ingest(videos, out_dir, **kw):
+        write_transcript(out_dir, {"video_id": "c", "title": "t",
+                                   "published_date": "2024-06-01", "channel": "@yc"},
+                         [{"start": 0, "duration": 1, "text": "hi"}], "captions", "en")
+        return {"ingested": 1, "skipped": 0, "failed": 1,
+                "by_source": {"captions": 1, "failed:blocked": 1},
+                "blocked": True, "not_attempted": 0, "block_detail": "tier1: d: IpBlocked"}
+
+    with patch("youtube_advisor.update.resolve_channel", return_value=listing), \
+         patch("youtube_advisor.update.run_ingest", side_effect=blocked_ingest) as ingest:
+        result = run(advisor_dir=str(out), yes=True)
+    assert [v["video_id"] for v in ingest.call_args.args[0]] == ["c", "d"]
+    assert result["summary"]["blocked"] is True
+    assert "+1 new" in result["guide"]
+    assert "YouTube blocked requests (tier1: d: IpBlocked)" in result["guide"]
+    assert f"youtube-advisor update --advisor {out} --yes" in result["guide"]
+    meta = json.loads((out / "references" / "corpus_meta.json").read_text())
+    assert meta["n_videos"] == 3
+
+    with patch("youtube_advisor.update.resolve_channel", return_value=listing), \
+         patch("youtube_advisor.update.run_ingest",
+               return_value={"ingested": 0, "skipped": 0, "failed": 0, "by_source": {}}) as again:
+        run(advisor_dir=str(out), yes=True)
+    assert [v["video_id"] for v in again.call_args.args[0]] == ["d"]
+
+
+def test_cli_update_exits_nonzero_on_block(tmp_path):
+    from click.testing import CliRunner
+    from youtube_advisor.cli import main
+    with patch("youtube_advisor.update.run",
+               return_value={"guide": "G", "evals": None,
+                             "summary": {"blocked": True, "by_source": {}}}):
+        res = CliRunner().invoke(main, ["update", "--advisor", str(tmp_path), "--yes"])
+    assert res.exit_code == 1
+    assert "YouTube blocked requests" in res.output
+
+
+def _blocked_ingest_writing(vid):
+    def _ingest(videos, out_dir, **kw):
+        write_transcript(out_dir, {"video_id": vid, "title": "t",
+                                   "published_date": "2024-06-01", "channel": "@yc"},
+                         [{"start": 0, "duration": 1, "text": "hi"}], "captions", "en")
+        return {"ingested": 1, "skipped": 0, "failed": 1,
+                "by_source": {"captions": 1, "failed:blocked": 1},
+                "blocked": True, "not_attempted": 0, "block_detail": "x"}
+    return _ingest
+
+
+def test_blocked_update_skips_skill_regen_and_evals(tmp_path):
+    out = _setup_advisor(tmp_path, existing_ids=("a", "b"))
+    with patch("youtube_advisor.update.resolve_channel",
+               return_value=[_stub_video(v) for v in ("a", "b", "c", "d")]), \
+         patch("youtube_advisor.update.run_ingest", side_effect=_blocked_ingest_writing("c")), \
+         patch("youtube_advisor.gen_skill_md.generate") as gen, \
+         patch("youtube_advisor.update.run_evals") as evals:
+        result = run(advisor_dir=str(out), yes=True, regen_skill_md=True,
+                     run_evals_=True, no_llm=False)
+    gen.assert_not_called()
+    assert (f"youtube-advisor update --advisor {out} --yes --regen-skill-md --run-evals"
+            in result["guide"])
+    evals.assert_not_called()
+    meta = json.loads((out / "references" / "corpus_meta.json").read_text())
+    # Failures are not corpus sources.
+    assert meta["transcript_source_counts"] == {"captions": 3}
+
+
+def test_regen_uses_stored_intent_and_drops_stale_handoff(tmp_path):
+    out = _setup_advisor(tmp_path, existing_ids=("a", "b"))
+    meta_p = out / "references" / "corpus_meta.json"
+    meta = json.loads(meta_p.read_text())
+    meta["user_intent"] = "pricing advice"
+    meta_p.write_text(json.dumps(meta))
+    (out / ".pending-llm-draft.json").write_text("{}")
+
+    def ok_ingest(videos, out_dir, **kw):
+        write_transcript(out_dir, {"video_id": "c", "title": "t",
+                                   "published_date": "2024-06-01", "channel": "@yc"},
+                         [{"start": 0, "duration": 1, "text": "hi"}], "captions", "en")
+        return {"ingested": 1, "skipped": 0, "failed": 0, "by_source": {"captions": 1}}
+
+    with patch("youtube_advisor.update.resolve_channel",
+               return_value=[_stub_video(v) for v in ("a", "b", "c")]), \
+         patch("youtube_advisor.update.run_ingest", side_effect=ok_ingest), \
+         patch("youtube_advisor.gen_skill_md.generate") as gen:
+        run(advisor_dir=str(out), yes=True, regen_skill_md=True, no_llm=False)
+    assert gen.call_args.kwargs["user_intent"] == "pricing advice"
+    assert not (out / ".pending-llm-draft.json").exists()

@@ -1,5 +1,6 @@
 from __future__ import annotations
 import json
+import logging
 import pathlib
 from datetime import date, datetime, timezone
 
@@ -9,13 +10,15 @@ import yaml
 from ._cookies import resolve_cookies
 from .filters import FilterConfig, apply_filters
 from .fetch_channel import resolve_channel, resolve_video
-from .ingest.orchestrator import run_ingest
+from .ingest.orchestrator import blocked_message, run_ingest
 from .build_index import build_index
 from .build_embeddings import build_embeddings
 from .eval_runner import run as run_evals
 from .postrun_guide import update_guide
 from ._md import video_id_from_filename, dump_yaml
 from ._llm import should_skip_llm
+
+log = logging.getLogger(__name__)
 
 # Back-compat alias for tests that import the underscore name.
 _video_id_from_filename = video_id_from_filename
@@ -178,6 +181,8 @@ def run(*, advisor_dir, since=None, max_n=None, ids=None,
     meta["corpus_version"] = f"{date.today().isoformat()}/{n_videos}"
     meta["last_update"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
     for src, c in summary.get("by_source", {}).items():
+        if src.startswith("failed"):
+            continue  # not in the corpus; retried runs would count them again
         meta.setdefault("transcript_source_counts", {})
         meta["transcript_source_counts"][src] = meta["transcript_source_counts"].get(src, 0) + c
 
@@ -191,8 +196,14 @@ def run(*, advisor_dir, since=None, max_n=None, ids=None,
 
     _save_state(out, filt, meta)
 
+    blocked = bool(summary.get("blocked"))
+    if blocked and (regen_skill_md or run_evals_):
+        log.warning("YouTube blocked this run: skipping SKILL.md regen and evals "
+                    "on the partial corpus; re-run update when unblocked.")
+    user_intent = meta.get("user_intent") or "(regenerated)"
+
     # SKILL.md regen — opt-in only
-    if regen_skill_md:
+    if regen_skill_md and not blocked:
         if effective_no_llm:
             # Re-emit the hand-off file so the calling AI can re-draft SKILL.md
             # from the (now-updated) corpus samples. Leave the existing SKILL.md
@@ -201,21 +212,24 @@ def run(*, advisor_dir, since=None, max_n=None, ids=None,
             _write_pending_llm_draft(
                 out,
                 meta=meta,
-                user_intent="(regenerated)",
+                user_intent=user_intent,
                 answer_language=meta.get("answer_language", "auto"),
                 quote_style=meta.get("quote_style", "translation-first"),
                 channel_display_name=", ".join(meta.get("channels", [])),
             )
         else:
             from .gen_skill_md import generate as gen_skill
-            gen_skill(out, user_intent="(regenerated)",
+            gen_skill(out, user_intent=user_intent,
                       answer_language=meta.get("answer_language", "auto"),
                       quote_style=meta.get("quote_style", "translation-first"),
                       channel_display_name=", ".join(meta.get("channels", [])))
+            # The LLM draft replaces any AI hand-off left by --no-llm or a
+            # blocked bootstrap; a stale one would invite a second redraft.
+            (out / ".pending-llm-draft.json").unlink(missing_ok=True)
 
     # Evals (opt-in)
     eval_summary = None
-    if run_evals_ and not effective_no_llm:
+    if run_evals_ and not effective_no_llm and not blocked:
         eval_summary = run_evals(out)
         delta = eval_summary.get("delta_passed")
         if delta is not None and delta < 0 and not yes:
@@ -234,9 +248,19 @@ def run(*, advisor_dir, since=None, max_n=None, ids=None,
                 return {
                     "guide": f"⟲ Rolled back {len(new_videos)} new videos due to eval regression.\n",
                     "evals": eval_summary,
+                    "summary": summary,
                 }
 
+    # Count what actually landed: failed or blocked videos are not in the corpus.
+    guide = update_guide(out, summary.get("ingested", 0),
+                         len(missing) if prune else 0, eval_summary)
+    if summary.get("blocked"):
+        # Carry the flags this run skipped into the printed retry command.
+        skipped = [f for f, on in (("--regen-skill-md", regen_skill_md),
+                                   ("--run-evals", run_evals_)) if on]
+        guide += "\n" + " ".join([blocked_message(summary, out), *skipped]) + "\n"
     return {
-        "guide": update_guide(out, len(new_videos), len(missing) if prune else 0, eval_summary),
+        "guide": guide,
         "evals": eval_summary,
+        "summary": summary,
     }

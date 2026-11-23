@@ -2,7 +2,8 @@ from __future__ import annotations
 import os
 import pathlib
 import subprocess
-from .captions_api import NoCaptionsAvailable
+from .captions_api import CaptionsBlocked, NoCaptionsAvailable
+from .captions_ytdlp import block_reason
 from .._cookies import ytdlp_args
 
 AUDIO_CACHE = pathlib.Path.home() / ".cache" / "youtube-advisor" / "audio"
@@ -18,6 +19,9 @@ def _download_audio(video_id: str, cookies: dict | None = None) -> pathlib.Path:
            "-o", str(AUDIO_CACHE / f"{video_id}.%(ext)s"), url]
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode != 0:
+        reason = block_reason(r.stderr)
+        if reason:
+            raise CaptionsBlocked(video_id, reason, authenticated=bool(cookies))
         raise NoCaptionsAvailable(video_id)
     if not out.exists():
         raise NoCaptionsAvailable(video_id)

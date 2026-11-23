@@ -94,3 +94,77 @@ def test_fetch_captions_picks_larger_within_same_language(monkeypatch):
 
     segs, _ = fetch_captions("abc", lang_pref="en")
     assert len(segs) == 5
+
+
+# ----- blocks and other yt-dlp failures -----
+
+from youtube_advisor.ingest.captions_api import CaptionsBlocked  # noqa: E402
+from youtube_advisor.ingest.captions_ytdlp import YtDlpFailed, block_reason  # noqa: E402
+
+
+def _run_returning(rc, stderr):
+    def fake_run(cmd, *a, **kw):
+        return subprocess.CompletedProcess(args=cmd, returncode=rc, stdout="", stderr=stderr)
+    return fake_run
+
+
+@pytest.mark.parametrize("rc,stderr", [
+    (1, "ERROR: Unable to download video subtitles for 'en': HTTP Error 429: Too Many Requests"),
+    (1, "ERROR: [youtube] abc: Sign in to confirm you’re not a bot. Use --cookies-from-browser"),
+    (1, "ERROR: [youtube] abc: This content isn't available, try again later. The current "
+        "session has been rate-limited by YouTube for up to an hour."),
+])
+def test_block_stderr_raises_captions_blocked(monkeypatch, rc, stderr):
+    monkeypatch.setattr("youtube_advisor.ingest.captions_ytdlp.subprocess.run",
+                        _run_returning(rc, stderr))
+    with pytest.raises(CaptionsBlocked) as ei:
+        fetch_captions("abc", cookies={"browser": "chrome"})
+    assert not isinstance(ei.value, NoCaptionsAvailable)
+    assert ei.value.authenticated is True
+
+
+@pytest.mark.parametrize("stderr", [
+    "ERROR: [youtube] abc: Video unavailable. This video is private",
+    "ERROR: [youtube] abc: Sign in to confirm your age. This video may be inappropriate",
+    "ERROR: Unable to download webpage: <urlopen error [Errno 8] nodename nor servname>",
+])
+def test_other_nonzero_exit_is_generic_failure_not_no_captions(monkeypatch, stderr):
+    monkeypatch.setattr("youtube_advisor.ingest.captions_ytdlp.subprocess.run",
+                        _run_returning(1, stderr))
+    with pytest.raises(YtDlpFailed) as ei:
+        fetch_captions("abc")
+    assert "exit 1" in str(ei.value)
+
+
+def test_written_vtt_wins_over_nonzero_exit(monkeypatch, fixtures_dir):
+    """yt-dlp exits 1 when one of several subtitle tracks fails; a usable VTT
+    that was written is still used."""
+    sample = (fixtures_dir / "sample.vtt").read_text()
+    def fake_run(cmd, *a, **kw):
+        td = pathlib.Path(cmd[cmd.index("-o") + 1]).parent
+        (td / "abc.en.vtt").write_text(sample)
+        return subprocess.CompletedProcess(args=cmd, returncode=1, stdout="",
+                                           stderr="ERROR: Unable to download video subtitles for 'de'")
+    monkeypatch.setattr("youtube_advisor.ingest.captions_ytdlp.subprocess.run", fake_run)
+    segs, lang = fetch_captions("abc")
+    assert lang == "en" and len(segs) == 3
+
+
+def test_block_reason_ignores_normal_output():
+    assert block_reason("[info] There are no subtitles for the requested languages") is None
+    assert block_reason(None) is None
+
+
+def test_recovered_429_warning_with_clean_exit_is_no_captions(monkeypatch):
+    """A 429 WARNING that a yt-dlp retry got past is not a block: exit 0 and
+    no VTT means the video has no subtitles."""
+    monkeypatch.setattr("youtube_advisor.ingest.captions_ytdlp.subprocess.run",
+                        _run_returning(0, "WARNING: [youtube] abc: HTTP Error 429: "
+                                          "Too Many Requests. Retrying (1/5)..."))
+    with pytest.raises(NoCaptionsAvailable):
+        fetch_captions("abc")
+
+
+def test_try_again_later_outside_rate_limit_text_is_not_a_block():
+    assert block_reason("ERROR: [youtube] abc: Something failed, please try again later") is None
+    assert block_reason("WARNING: HTTP Error 429: Too Many Requests") is None
