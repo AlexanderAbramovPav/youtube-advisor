@@ -137,3 +137,15 @@ def test_transcripts_disabled_is_still_no_captions():
         MockApi.return_value.list.side_effect = TranscriptsDisabled("vid")
         with pytest.raises(NoCaptionsAvailable):
             fetch_captions("vid")
+
+
+def test_authenticates_only_with_a_loadable_cookie_file(tmp_path):
+    from youtube_advisor.ingest.captions_api import authenticates
+    good = tmp_path / "cookies.txt"
+    good.write_text("# Netscape HTTP Cookie File\n"
+                    ".youtube.com\tTRUE\t/\tTRUE\t0\tSID\tx\n")
+    assert authenticates({"file": good}) is True
+    assert authenticates({"file": tmp_path / "missing.txt"}) is False
+    assert authenticates({"browser": "chrome"}) is False
+    assert authenticates({}) is False
+    assert authenticates(None) is False

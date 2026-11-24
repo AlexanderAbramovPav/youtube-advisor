@@ -89,7 +89,11 @@ def bootstrap(**kw):
                    "--cookies-from-browser.")
 @click.option("--yes", is_flag=True)
 def update(**kw):
-    """Update an existing advisor with new videos from the saved filter."""
+    """Update an existing advisor with new videos from the saved filter.
+
+    Videos that failed or were blocked by YouTube on an earlier run are
+    retried here; there is no --reingest flag.
+    """
     from . import update as up_mod
     result = up_mod.run(**kw)
     click.echo(result["guide"])

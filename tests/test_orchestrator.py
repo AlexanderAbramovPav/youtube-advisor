@@ -430,3 +430,114 @@ def test_no_polite_sleep_for_videos_queued_after_block(tmp_path):
                              max_concurrent=1)
     assert sleep.call_count == 1
     assert summary["not_attempted"] == 9
+
+
+# ----- captions-pass concurrency and polite sleep, per tier -----
+
+def _peak_tracker(result=None, exc=None, hold=0.05):
+    """Fake tier fn that records the peak number of concurrent calls."""
+    import threading
+    lock = threading.Lock()
+    state = {"now": 0, "peak": 0, "calls": 0}
+
+    def fn(vid, cookies=None):
+        with lock:
+            state["now"] += 1
+            state["calls"] += 1
+            state["peak"] = max(state["peak"], state["now"])
+        threading.Event().wait(hold)  # time.sleep is patched in tests
+        with lock:
+            state["now"] -= 1
+        if exc is not None:
+            raise exc(vid)
+        return result
+    return fn, state
+
+
+def _pool_sizes():
+    import concurrent.futures as cf
+    sizes = []
+
+    class Recording(cf.ThreadPoolExecutor):
+        def __init__(self, max_workers=None, *a, **kw):
+            sizes.append(max_workers)
+            super().__init__(max_workers, *a, **kw)
+    return Recording, sizes
+
+
+def _cookie_file(tmp_path):
+    p = tmp_path / "cookies.txt"
+    p.write_text("# Netscape HTTP Cookie File\n"
+                 ".youtube.com\tTRUE\t/\tTRUE\t0\tSID\tx\n")
+    return p
+
+
+def _run_tiers(tmp_path, cookies, t1_fn, t2_fn, n=12):
+    pool_cls, sizes = _pool_sizes()
+    with patch(_SLEEP) as sleep, patch(_T1, side_effect=t1_fn), \
+         patch(_T2, side_effect=t2_fn), \
+         patch("youtube_advisor.ingest.orchestrator.cf.ThreadPoolExecutor", pool_cls):
+        summary = run_ingest([_vid(f"v{i}") for i in range(n)], tmp_path / "tx",
+                             cookies=cookies, skip_whisper=True)
+    return summary, sizes, sleep
+
+
+def test_browser_cookies_keep_tier1_at_unauthenticated_setting(tmp_path):
+    """Browser cookies never reach the captions API: tier 1 runs at most 2
+    calls at once, each after a polite sleep, inside the 8-worker pool."""
+    t1, s1 = _peak_tracker(result=(_SEGS, "en"))
+    summary, sizes, sleep = _run_tiers(tmp_path, {"browser": "chrome"}, t1, None)
+    assert summary["ingested"] == 12
+    assert sizes == [8]
+    assert s1["peak"] == 2
+    assert sleep.call_count == 12
+
+
+def test_browser_cookies_keep_tier2_at_authenticated_setting(tmp_path):
+    """yt-dlp sends the browser cookies: tier 2 is not held to tier 1's cap
+    and gets no polite sleep."""
+    t1, s1 = _peak_tracker(exc=NoCaptionsAvailable, hold=0)
+    t2, s2 = _peak_tracker(result=(_SEGS, "en"), hold=0.1)
+    summary, sizes, sleep = _run_tiers(tmp_path, {"browser": "chrome"}, t1, t2)
+    assert summary["ingested"] == 12
+    assert s1["peak"] <= 2
+    assert 2 < s2["peak"] <= 8
+    assert sleep.call_count == 12  # tier 1 only
+
+
+def test_cookie_file_authenticates_tier1(tmp_path):
+    t1, s1 = _peak_tracker(result=(_SEGS, "en"))
+    summary, sizes, sleep = _run_tiers(tmp_path, {"file": _cookie_file(tmp_path)}, t1, None)
+    assert summary["ingested"] == 12
+    assert sizes == [8]
+    assert 2 < s1["peak"] <= 8
+    sleep.assert_not_called()
+
+
+def test_unreadable_cookie_file_leaves_tier1_unauthenticated(tmp_path):
+    t1, s1 = _peak_tracker(result=(_SEGS, "en"))
+    _, sizes, sleep = _run_tiers(tmp_path, {"file": tmp_path / "missing.txt"}, t1, None)
+    assert sizes == [8]
+    assert s1["peak"] == 2
+    assert sleep.call_count == 12
+
+
+def test_no_cookies_two_workers_and_sleep_before_every_call(tmp_path):
+    t1, s1 = _peak_tracker(exc=NoCaptionsAvailable, hold=0)
+    t2, s2 = _peak_tracker(result=(_SEGS, "en"))
+    summary, sizes, sleep = _run_tiers(tmp_path, None, t1, t2)
+    assert summary["ingested"] == 12
+    assert sizes == [2]
+    assert s1["peak"] <= 2 and s2["peak"] <= 2
+    assert sleep.call_count == 24  # before tier 1 and tier 2
+
+
+def test_explicit_max_concurrent_lifts_tier1_cap(tmp_path):
+    t1, s1 = _peak_tracker(result=(_SEGS, "en"))
+    pool_cls, sizes = _pool_sizes()
+    with patch(_SLEEP), patch(_T1, side_effect=t1), \
+         patch("youtube_advisor.ingest.orchestrator.cf.ThreadPoolExecutor", pool_cls):
+        run_ingest([_vid(f"v{i}") for i in range(12)], tmp_path / "tx",
+                   cookies={"browser": "chrome"}, max_concurrent=6)
+    assert sizes == [6]
+    assert 2 < s1["peak"] <= 6

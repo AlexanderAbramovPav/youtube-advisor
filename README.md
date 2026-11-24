@@ -155,6 +155,8 @@ youtube-advisor update --advisor ~/.claude/skills/yc-advisor --run-evals --yes
 
 `youtube-advisor bootstrap --help` and `youtube-advisor update --help` print the full flag list.
 
+Videos that failed or were blocked by YouTube are retried by the next `update`; there is no `--reingest` flag. After a bootstrap that YouTube blocked, the first `update` that finishes without a block also detects the corpus language from the transcripts it now has and, when an LLM is available, generates the evals the bootstrap skipped. `update` reuses the bootstrap's `--whisper-skip-if-no-captions` setting.
+
 ### Bypassing YT anti-bot with browser cookies
 
 When unauthenticated channel-resolution gets 429-blocked, pass cookies from a logged-in browser. yt-dlp reads them straight from the browser profile — no copy-paste:
@@ -168,7 +170,7 @@ youtube-advisor bootstrap --channel @ycombinator --out ~/.claude/skills/yc-advis
   --cookies ~/secrets/yt-cookies.txt --yes
 ```
 
-Resolution order: explicit flag → `YOUTUBE_ADVISOR_COOKIES_BROWSER` / `YOUTUBE_ADVISOR_COOKIES_FILE` env → `~/.config/youtube-advisor/cookies.txt` if present → none. With cookies set the captions pool stays at concurrency 8; without them it drops to 2 + per-call jitter so YT is less likely to block you.
+Resolution order: explicit flag → `YOUTUBE_ADVISOR_COOKIES_BROWSER` / `YOUTUBE_ADVISOR_COOKIES_FILE` env → `~/.config/youtube-advisor/cookies.txt` if present → none. With cookies set the captions pool stays at concurrency 8; without them it drops to 2 + per-call jitter so YT is less likely to block you. The captions API can only use a cookies file: with `--cookies-from-browser` it still runs at most 2 calls at once with the jitter, while yt-dlp (which reads the browser cookies) uses the full pool.
 
 ### Vendoring `_lib`
 

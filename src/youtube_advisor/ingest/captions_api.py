@@ -54,6 +54,12 @@ def _build_http_client(cookies: Optional[dict]) -> Optional[requests.Session]:
     return s
 
 
+def authenticates(cookies: Optional[dict]) -> bool:
+    """True when ``fetch_captions`` would send these cookies (a loadable
+    cookie file). Browser cookies never reach this tier."""
+    return _build_http_client(cookies) is not None
+
+
 def fetch_captions(
     video_id: str, cookies: Optional[dict] = None
 ) -> tuple[list[dict], str]:

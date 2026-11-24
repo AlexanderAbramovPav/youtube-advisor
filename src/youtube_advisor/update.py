@@ -14,6 +14,7 @@ from .ingest.orchestrator import blocked_message, run_ingest
 from .build_index import build_index
 from .build_embeddings import build_embeddings
 from .eval_runner import run as run_evals
+from .gen_benchmark import generate as gen_bench
 from .postrun_guide import update_guide
 from ._md import video_id_from_filename, dump_yaml
 from ._llm import should_skip_llm
@@ -63,12 +64,105 @@ def _filter_from_yaml(filt: dict) -> FilterConfig:
     )
 
 
+def _language_was_detected(meta: dict) -> bool:
+    """Whether the stored corpus_language came from real transcripts.
+
+    Advisors written before the marker existed: their language is treated as
+    a placeholder only when the stored corpus was empty (n_videos == 0), the
+    one case where it provably was not detected.
+    """
+    if "corpus_language_detected" in meta:
+        return bool(meta["corpus_language_detected"])
+    return meta.get("n_videos", 0) > 0
+
+
+def _requested_quote_style(meta: dict) -> str:
+    """The quote style the user asked for: "auto" or a fixed style.
+
+    Advisors written before it was stored: the stored style counts as "auto"
+    when it equals what "auto" resolves to for the stored languages (the CLI
+    default is "auto"); any other value was a fixed choice.
+    """
+    from .bootstrap import _resolve_quote_style
+    if meta.get("quote_style_requested"):
+        return meta["quote_style_requested"]
+    stored = meta.get("quote_style", "translation-first")
+    auto = _resolve_quote_style("auto", meta.get("answer_language", "auto"),
+                                meta.get("corpus_language", "en"))
+    return "auto" if stored == auto else stored
+
+
+def _refresh_corpus_language(out: pathlib.Path, meta: dict) -> bool:
+    """Detect corpus_language again when the stored one is a placeholder.
+
+    A bootstrap that got no transcripts (e.g. YouTube blocked the first
+    video) stores "en" without looking at any text. Once transcripts exist,
+    detect the language from them and resolve an "auto" quote style again; a
+    fixed quote style is kept. Updates ``meta`` in place; returns True when
+    the language or quote style changed.
+    """
+    from .bootstrap import _detect_corpus_language, _has_transcripts, _resolve_quote_style
+    if _language_was_detected(meta) or not _has_transcripts(out / "transcripts"):
+        return False
+    requested = _requested_quote_style(meta)
+    old = (meta.get("corpus_language"), meta.get("quote_style"))
+    lang = _detect_corpus_language(out / "transcripts")
+    meta["corpus_language"] = lang
+    meta["corpus_language_detected"] = True
+    meta["quote_style_requested"] = requested
+    meta["quote_style"] = _resolve_quote_style(
+        requested, meta.get("answer_language", "auto"), lang)
+    return (meta["corpus_language"], meta["quote_style"]) != old
+
+
+def _rewrite_stub(out: pathlib.Path, meta: dict) -> None:
+    """Re-render the stub SKILL.md and the AI hand-off with the current meta.
+
+    Only while ``.pending-llm-draft.json`` exists: then SKILL.md is still the
+    stub (the AI deletes the hand-off once it drafts its own).
+    """
+    if not (out / ".pending-llm-draft.json").exists():
+        return
+    from .bootstrap import _write_pending_llm_draft, _write_stub_skill
+    kw = dict(
+        meta=meta,
+        user_intent=meta.get("user_intent", ""),
+        answer_language=meta.get("answer_language", "auto"),
+        quote_style=meta.get("quote_style", "translation-first"),
+        channel_display_name=", ".join(meta.get("channels", [])),
+    )
+    _write_stub_skill(out, **kw)
+    _write_pending_llm_draft(out, **kw)
+
+
+def _generate_pending_evals(out: pathlib.Path, filt: dict, meta: dict) -> dict | None:
+    """Generate the benchmark a blocked bootstrap skipped, then run it.
+
+    Returns the eval summary, or None when no evals are pending. The caller
+    checks that this run was not blocked and may use the LLM.
+    """
+    from .bootstrap import _has_transcripts
+    if not meta.get("evals_pending") or not _has_transcripts(out / "transcripts"):
+        return None
+    gen_bench(out)
+    meta.pop("evals_pending", None)
+    _save_state(out, filt, meta)
+    return run_evals(out)
+
+
 def run(*, advisor_dir, since=None, max_n=None, ids=None,
         reindex_only=False, regen_skill_md=False, run_evals_=False,
         prune=False, yes=False, no_llm=None,
         cookies_from_browser: str | None = None,
         cookies_file: str | None = None,
+        whisper_skip_if_no_captions: bool | None = None,
         **_) -> dict:
+    """Ingest new videos for the saved filter and refresh the index.
+
+    Videos that failed or were blocked on an earlier run have no transcript
+    file, so this run selects and fetches them again. ``None`` for
+    ``whisper_skip_if_no_captions`` keeps the value saved at bootstrap.
+    """
 
     out = pathlib.Path(advisor_dir).expanduser()
     cookies = resolve_cookies(
@@ -76,6 +170,8 @@ def run(*, advisor_dir, since=None, max_n=None, ids=None,
         cookies_file=cookies_file,
     )
     filt, meta = _load_state(out)
+    # Decide before this run changes n_videos (the legacy rule reads it).
+    meta["corpus_language_detected"] = _language_was_detected(meta)
 
     # CLI overrides — normalise dates at the boundary so downstream
     # `date.fromisoformat()` never sees a datetime-shaped string.
@@ -88,6 +184,8 @@ def run(*, advisor_dir, since=None, max_n=None, ids=None,
         ids_path = pathlib.Path(ids)
         extra = {line.strip() for line in ids_path.read_text().splitlines() if line.strip()}
         filt["extra_ids"] = sorted(set(filt.get("extra_ids", [])) | extra)
+    if whisper_skip_if_no_captions is not None:
+        filt["whisper_skip_if_no_captions"] = bool(whisper_skip_if_no_captions)
 
     # Resolve LLM mode up-front so the early-return path can gate evals correctly.
     effective_no_llm = should_skip_llm(no_llm)
@@ -146,8 +244,13 @@ def run(*, advisor_dir, since=None, max_n=None, ids=None,
 
     if not new_videos and not missing:
         # Persist any CLI overrides even when corpus didn't change.
+        if _refresh_corpus_language(out, meta):
+            _rewrite_stub(out, meta)
         _save_state(out, filt, meta)
-        eval_summary = run_evals(out) if (run_evals_ and not effective_no_llm) else None
+        eval_summary = (_generate_pending_evals(out, filt, meta)
+                        if not effective_no_llm else None)
+        if eval_summary is None and run_evals_ and not effective_no_llm:
+            eval_summary = run_evals(out)
         return {
             "guide": f"✓ {out.name}: 0 new, 0 removed, index unchanged.\n",
             "evals": eval_summary,
@@ -166,7 +269,8 @@ def run(*, advisor_dir, since=None, max_n=None, ids=None,
                 p.unlink()
 
     # Ingest new
-    summary = (run_ingest(new_videos, out / "transcripts", cookies=cookies)
+    summary = (run_ingest(new_videos, out / "transcripts", cookies=cookies,
+                          skip_whisper=bool(filt.get("whisper_skip_if_no_captions")))
                if new_videos
                else {"by_source": {}, "ingested": 0, "skipped": 0, "failed": 0})
 
@@ -194,6 +298,8 @@ def run(*, advisor_dir, since=None, max_n=None, ids=None,
         if dates:
             meta["latest_video_date"] = max(dates)
 
+    if _refresh_corpus_language(out, meta):
+        _rewrite_stub(out, meta)
     _save_state(out, filt, meta)
 
     blocked = bool(summary.get("blocked"))
@@ -227,9 +333,14 @@ def run(*, advisor_dir, since=None, max_n=None, ids=None,
             # blocked bootstrap; a stale one would invite a second redraft.
             (out / ".pending-llm-draft.json").unlink(missing_ok=True)
 
-    # Evals (opt-in)
+    # Evals a blocked bootstrap skipped: generated by the first update that
+    # finishes without a block (the LLM writes the benchmark).
     eval_summary = None
-    if run_evals_ and not effective_no_llm and not blocked:
+    if not effective_no_llm and not blocked:
+        eval_summary = _generate_pending_evals(out, filt, meta)
+
+    # Evals (opt-in)
+    if eval_summary is None and run_evals_ and not effective_no_llm and not blocked:
         eval_summary = run_evals(out)
         delta = eval_summary.get("delta_passed")
         if delta is not None and delta < 0 and not yes:
