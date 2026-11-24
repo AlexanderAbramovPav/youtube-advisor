@@ -526,7 +526,47 @@ def test_benchmark_written_by_the_ai_is_kept(tmp_path):
     (out / "evals" / "benchmark.json").write_text('{"questions": []}')
     _, meta, m = _run_update(out, _ingest_writing("a"), no_llm=False)
     m["gen_bench"].assert_not_called()
+    m["run_evals"].assert_called_once_with(out)
     assert "evals_pending" not in meta
+
+
+def _writing_gen_bench(out):
+    (out / "evals").mkdir(exist_ok=True)
+    (out / "evals" / "benchmark.json").write_text('{"questions": []}')
+
+
+def test_failed_eval_run_is_retried_by_next_update(tmp_path):
+    """gen_bench wrote the benchmark, then run_evals failed: the next update
+    runs the evals (without a new benchmark) before clearing the marker."""
+    out = _empty_bootstrap_advisor(tmp_path, evals_pending=True)
+    with patch("youtube_advisor.update.resolve_channel",
+               return_value=[_stub_video("a"), _stub_video("b")]), \
+         patch("youtube_advisor.update.run_ingest", side_effect=_ingest_writing("a")), \
+         patch("youtube_advisor.update.build_embeddings"), \
+         patch("youtube_advisor.update.gen_bench", side_effect=_writing_gen_bench), \
+         patch("youtube_advisor.update.run_evals", side_effect=ValueError("bad")):
+        run(advisor_dir=str(out), yes=True, no_llm=False)
+    meta = json.loads((out / "references" / "corpus_meta.json").read_text())
+    assert meta["evals_pending"] is True
+    _, meta, m = _run_update(out, _ingest_writing("b"), no_llm=False)
+    m["gen_bench"].assert_not_called()
+    m["run_evals"].assert_called_once_with(out)
+    assert "evals_pending" not in meta
+
+
+def test_failed_pending_evals_do_not_fall_through_to_run_evals(tmp_path):
+    """With --run-evals, a failed pending attempt must not be followed by an
+    unguarded eval run (no benchmark exists)."""
+    out = _empty_bootstrap_advisor(tmp_path, evals_pending=True)
+    with patch("youtube_advisor.update.resolve_channel",
+               return_value=[_stub_video("a")]), \
+         patch("youtube_advisor.update.run_ingest", side_effect=_ingest_writing("a")), \
+         patch("youtube_advisor.update.build_embeddings"), \
+         patch("youtube_advisor.update.gen_bench", side_effect=RuntimeError("no credit")), \
+         patch("youtube_advisor.update.run_evals") as evals:
+        result = run(advisor_dir=str(out), yes=True, no_llm=False, run_evals_=True)
+    evals.assert_not_called()
+    assert "+1 new" in result["guide"]
 
 
 def test_no_evals_drops_pending_evals(tmp_path):
