@@ -419,8 +419,9 @@ def test_resume_passes_whisper_skip_only_when_given(tmp_path, flag, expected):
     (out / "references").mkdir(parents=True)
     (out / "references" / "selection_filter.yaml").write_text("version: 1\n")
     with patch("youtube_advisor.update.run", return_value={"guide": "G"}) as up:
-        run(**_base_kwargs(out, whisper_skip_if_no_captions=flag))
+        run(**_base_kwargs(out, whisper_skip_if_no_captions=flag, no_evals=flag))
     assert up.call_args.kwargs["whisper_skip_if_no_captions"] is expected
+    assert up.call_args.kwargs["no_evals"] is flag
 
 
 def test_blocked_bootstrap_then_clean_update(tmp_path, mock_no_llm_pipeline):

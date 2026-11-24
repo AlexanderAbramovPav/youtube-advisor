@@ -79,17 +79,10 @@ def _language_was_detected(meta: dict) -> bool:
 def _requested_quote_style(meta: dict) -> str:
     """The quote style the user asked for: "auto" or a fixed style.
 
-    Advisors written before it was stored: the stored style counts as "auto"
-    when it equals what "auto" resolves to for the stored languages (the CLI
-    default is "auto"); any other value was a fixed choice.
+    Advisors written before it was stored cannot tell an explicit choice
+    from "auto", so their stored style is kept as a fixed choice.
     """
-    from .bootstrap import _resolve_quote_style
-    if meta.get("quote_style_requested"):
-        return meta["quote_style_requested"]
-    stored = meta.get("quote_style", "translation-first")
-    auto = _resolve_quote_style("auto", meta.get("answer_language", "auto"),
-                                meta.get("corpus_language", "en"))
-    return "auto" if stored == auto else stored
+    return meta.get("quote_style_requested") or meta.get("quote_style", "translation-first")
 
 
 def _refresh_corpus_language(out: pathlib.Path, meta: dict) -> bool:
@@ -99,24 +92,24 @@ def _refresh_corpus_language(out: pathlib.Path, meta: dict) -> bool:
     video) stores "en" without looking at any text. Once transcripts exist,
     detect the language from them and resolve an "auto" quote style again; a
     fixed quote style is kept. Updates ``meta`` in place; returns True when
-    the language or quote style changed.
+    it detected the language (even when it is the "en" placeholder again).
     """
     from .bootstrap import _detect_corpus_language, _has_transcripts, _resolve_quote_style
     if _language_was_detected(meta) or not _has_transcripts(out / "transcripts"):
         return False
     requested = _requested_quote_style(meta)
-    old = (meta.get("corpus_language"), meta.get("quote_style"))
     lang = _detect_corpus_language(out / "transcripts")
     meta["corpus_language"] = lang
     meta["corpus_language_detected"] = True
     meta["quote_style_requested"] = requested
     meta["quote_style"] = _resolve_quote_style(
         requested, meta.get("answer_language", "auto"), lang)
-    return (meta["corpus_language"], meta["quote_style"]) != old
+    return True
 
 
 def _rewrite_stub(out: pathlib.Path, meta: dict) -> None:
-    """Re-render the stub SKILL.md and the AI hand-off with the current meta.
+    """Re-render the stub SKILL.md and the AI hand-off with the current meta
+    and transcript samples (a blocked bootstrap wrote them with none).
 
     Only while ``.pending-llm-draft.json`` exists: then SKILL.md is still the
     stub (the AI deletes the hand-off once it drafts its own).
@@ -138,16 +131,28 @@ def _rewrite_stub(out: pathlib.Path, meta: dict) -> None:
 def _generate_pending_evals(out: pathlib.Path, filt: dict, meta: dict) -> dict | None:
     """Generate the benchmark a blocked bootstrap skipped, then run it.
 
-    Returns the eval summary, or None when no evals are pending. The caller
-    checks that this run was not blocked and may use the LLM.
+    Returns the eval summary, or None when none ran. The caller checks that
+    this run was not blocked and may use the LLM. A benchmark the calling AI
+    already wrote is kept. A failure is logged and leaves the evals pending:
+    the corpus update itself has succeeded by then.
     """
     from .bootstrap import _has_transcripts
     if not meta.get("evals_pending") or not _has_transcripts(out / "transcripts"):
         return None
-    gen_bench(out)
+    if (out / "evals" / "benchmark.json").exists():
+        meta.pop("evals_pending", None)
+        _save_state(out, filt, meta)
+        return None
+    try:
+        gen_bench(out)
+        summary = run_evals(out)
+    except Exception as e:
+        log.warning("Could not generate the pending evals (%s); the next "
+                    "update tries again.", e)
+        return None
     meta.pop("evals_pending", None)
     _save_state(out, filt, meta)
-    return run_evals(out)
+    return summary
 
 
 def run(*, advisor_dir, since=None, max_n=None, ids=None,
@@ -156,12 +161,14 @@ def run(*, advisor_dir, since=None, max_n=None, ids=None,
         cookies_from_browser: str | None = None,
         cookies_file: str | None = None,
         whisper_skip_if_no_captions: bool | None = None,
+        no_evals: bool = False,
         **_) -> dict:
     """Ingest new videos for the saved filter and refresh the index.
 
     Videos that failed or were blocked on an earlier run have no transcript
     file, so this run selects and fetches them again. ``None`` for
     ``whisper_skip_if_no_captions`` keeps the value saved at bootstrap.
+    ``no_evals`` drops evals a blocked bootstrap left pending.
     """
 
     out = pathlib.Path(advisor_dir).expanduser()
@@ -184,6 +191,8 @@ def run(*, advisor_dir, since=None, max_n=None, ids=None,
         ids_path = pathlib.Path(ids)
         extra = {line.strip() for line in ids_path.read_text().splitlines() if line.strip()}
         filt["extra_ids"] = sorted(set(filt.get("extra_ids", [])) | extra)
+    if no_evals:
+        meta.pop("evals_pending", None)
     if whisper_skip_if_no_captions is not None:
         filt["whisper_skip_if_no_captions"] = bool(whisper_skip_if_no_captions)
 

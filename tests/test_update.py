@@ -389,8 +389,8 @@ def test_language_detected_from_transcripts_of_a_blocked_update(tmp_path):
 
 
 def test_legacy_meta_without_marker(tmp_path):
-    """No marker: an empty stored corpus means the language was a placeholder,
-    and a stored style equal to what "auto" gives counts as "auto"."""
+    """No marker: an empty stored corpus means the language was a placeholder.
+    Without quote_style_requested, the stored style is kept as a fixed one."""
     out = _empty_bootstrap_advisor(tmp_path)
     meta_p = out / "references" / "corpus_meta.json"
     meta = json.loads(meta_p.read_text())
@@ -398,7 +398,7 @@ def test_legacy_meta_without_marker(tmp_path):
     meta_p.write_text(json.dumps(meta))
     _, meta, _ = _run_update(out, _ingest_writing("a", lang="ru"), no_llm=True)
     assert meta["corpus_language"] == "ru"
-    assert meta["quote_style"] == "translation-first"
+    assert meta["quote_style"] == "quote-only"
 
 
 def test_legacy_meta_with_corpus_keeps_language(tmp_path):
@@ -476,4 +476,61 @@ def test_pending_evals_generated_when_nothing_new(tmp_path):
     _, meta, m = _run_update(out, _ingest_writing("z"), no_llm=False)
     m["ingest"].assert_not_called()
     m["gen_bench"].assert_called_once_with(out)
+    assert "evals_pending" not in meta
+
+
+def test_stub_refreshed_when_placeholder_language_is_confirmed(tmp_path):
+    """English channel: "en" is detected again, but the hand-off a blocked
+    bootstrap wrote had no samples and 0 videos, so it is still rewritten."""
+    out = _empty_bootstrap_advisor(tmp_path)
+    (out / ".pending-llm-draft.json").write_text(json.dumps({"samples": []}))
+    _, meta, _ = _run_update(out, _ingest_writing("a", lang="en"), no_llm=True)
+    assert meta["corpus_language"] == "en"
+    assert meta["corpus_language_detected"] is True
+    handoff = json.loads((out / ".pending-llm-draft.json").read_text())
+    assert [s["video_id"] for s in handoff["samples"]] == ["a"]
+    assert handoff["corpus_meta"]["n_videos"] == 1
+
+
+def test_pending_evals_failure_does_not_fail_update(tmp_path):
+    out = _empty_bootstrap_advisor(tmp_path, evals_pending=True)
+    with patch("youtube_advisor.update.resolve_channel",
+               return_value=[_stub_video("a")]), \
+         patch("youtube_advisor.update.run_ingest", side_effect=_ingest_writing("a")), \
+         patch("youtube_advisor.update.build_embeddings"), \
+         patch("youtube_advisor.update.gen_bench", side_effect=RuntimeError("no credit")), \
+         patch("youtube_advisor.update.run_evals") as evals:
+        result = run(advisor_dir=str(out), yes=True, no_llm=False)
+    evals.assert_not_called()
+    assert "+1 new" in result["guide"]
+    meta = json.loads((out / "references" / "corpus_meta.json").read_text())
+    assert meta["evals_pending"] is True
+
+
+def test_pending_evals_kept_when_run_evals_fails(tmp_path):
+    out = _empty_bootstrap_advisor(tmp_path, evals_pending=True)
+    with patch("youtube_advisor.update.resolve_channel",
+               return_value=[_stub_video("a")]), \
+         patch("youtube_advisor.update.run_ingest", side_effect=_ingest_writing("a")), \
+         patch("youtube_advisor.update.build_embeddings"), \
+         patch("youtube_advisor.update.gen_bench"), \
+         patch("youtube_advisor.update.run_evals", side_effect=ValueError("bad json")):
+        run(advisor_dir=str(out), yes=True, no_llm=False)
+    meta = json.loads((out / "references" / "corpus_meta.json").read_text())
+    assert meta["evals_pending"] is True
+
+
+def test_benchmark_written_by_the_ai_is_kept(tmp_path):
+    out = _empty_bootstrap_advisor(tmp_path, evals_pending=True)
+    (out / "evals").mkdir()
+    (out / "evals" / "benchmark.json").write_text('{"questions": []}')
+    _, meta, m = _run_update(out, _ingest_writing("a"), no_llm=False)
+    m["gen_bench"].assert_not_called()
+    assert "evals_pending" not in meta
+
+
+def test_no_evals_drops_pending_evals(tmp_path):
+    out = _empty_bootstrap_advisor(tmp_path, evals_pending=True)
+    _, meta, m = _run_update(out, _ingest_writing("a"), no_llm=False, no_evals=True)
+    m["gen_bench"].assert_not_called()
     assert "evals_pending" not in meta

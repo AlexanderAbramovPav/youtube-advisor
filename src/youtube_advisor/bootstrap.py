@@ -302,7 +302,8 @@ def run(*, channels, since, until, max_n, playlists, title_include, title_exclud
         return _update(advisor_dir=str(out), yes=True, no_llm=no_llm,
                        cookies_from_browser=cookies_from_browser,
                        cookies_file=cookies_file,
-                       whisper_skip_if_no_captions=whisper_skip_if_no_captions or None)
+                       whisper_skip_if_no_captions=whisper_skip_if_no_captions or None,
+                       no_evals=no_evals)
 
     out.mkdir(parents=True, exist_ok=True)
     prog = Progress(out)
