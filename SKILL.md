@@ -109,6 +109,8 @@ youtube-advisor update --advisor ~/.claude/skills/yc-advisor --yes
 
 Same UX: never show the user the command. Echo the postrun summary. If the user provides a hint ("обнови, но только за эту неделю"), translate it to `--since <date>`.
 
+Videos that failed or were blocked by YouTube are retried by the next update; there is no `--reingest` flag. After a blocked bootstrap, the first update that finishes without a block detects the corpus language from the transcripts it now has and generates the evals the bootstrap skipped (not with `--no-llm`).
+
 ## Worked examples (for YOU the agent — never shown to the user)
 
 Each example shows: user message → flags YOU compose → what the user sees.
@@ -219,7 +221,7 @@ If you see HTTP 429 / "Sign in to confirm you're not a bot" / `_extract_player_r
 **Exit code 1 with "YouTube blocked requests":** `bootstrap` / `update` stopped at the first block: no further YouTube requests and no Whisper fallback for the blocked video. The advisor is partial but resumable; the blocked video (`failed:blocked` in `ingest.errors.log`) and the videos not tried yet are retried by the next update. Show the user the printed message, then run the printed `youtube-advisor update …` command after a wait or with cookies (below). After a blocked bootstrap, do not draft SKILL.md from `.pending-llm-draft.json` until an update finishes without a block.
 
 **Option 1 — Use your logged-in browser cookies (recommended):**
-Pass `--cookies-from-browser chrome` (or `firefox`, `safari`, `brave`, `edge`). yt-dlp reads cookies straight from the browser profile — no copy-paste. With cookies set, the captions pool stays at concurrency 8.
+Pass `--cookies-from-browser chrome` (or `firefox`, `safari`, `brave`, `edge`). yt-dlp reads cookies straight from the browser profile — no copy-paste. With cookies set, the captions pool stays at concurrency 8 (the captions API itself cannot read browser cookies, so it stays at 2 calls at once with a 0.5–2s jitter; yt-dlp uses the cookies).
 
 **Option 2 — Wait it out:**
 The defaults already slow requests (1–5s random sleep) and retry on 429 with exponential backoff. Without cookies the captions pool also drops to concurrency 2 + a 0.5–2s jitter per call. A retry after a few minutes usually clears.

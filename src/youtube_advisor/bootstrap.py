@@ -38,6 +38,10 @@ def _resolve_quote_style(qs: str, answer_language: str, corpus_lang: str) -> str
     return "quote-only" if answer_language == corpus_lang else "translation-first"
 
 
+def _has_transcripts(transcripts_dir: pathlib.Path) -> bool:
+    return transcripts_dir.exists() and any(transcripts_dir.glob("*.md"))
+
+
 def _detect_corpus_language(transcripts_dir: pathlib.Path) -> str:
     """Sample up to 3 transcripts' frontmatter `transcript_language`; default 'en'."""
     if not transcripts_dir.exists():
@@ -297,7 +301,9 @@ def run(*, channels, since, until, max_n, playlists, title_include, title_exclud
         from .update import run as _update
         return _update(advisor_dir=str(out), yes=True, no_llm=no_llm,
                        cookies_from_browser=cookies_from_browser,
-                       cookies_file=cookies_file)
+                       cookies_file=cookies_file,
+                       whisper_skip_if_no_captions=whisper_skip_if_no_captions or None,
+                       no_evals=no_evals)
 
     out.mkdir(parents=True, exist_ok=True)
     prog = Progress(out)
@@ -376,8 +382,11 @@ def run(*, channels, since, until, max_n, playlists, title_include, title_exclud
     model_name = "BAAI/bge-m3" if multilingual else "BAAI/bge-small-en-v1.5"
     build_embeddings(out / "transcripts", out / "references", model_name=model_name)
 
-    # 8) Detect corpus language from sampled transcripts.
+    # 8) Detect corpus language from sampled transcripts. With none (every
+    # video blocked or failed) "en" is only a placeholder: `update` detects
+    # it again once transcripts land.
     corpus_lang = _detect_corpus_language(out / "transcripts")
+    lang_detected = _has_transcripts(out / "transcripts")
 
     # 9) Resolve quote style.
     qs = _resolve_quote_style(quote_style, answer_language, corpus_lang)
@@ -396,8 +405,12 @@ def run(*, channels, since, until, max_n, playlists, title_include, title_exclud
         "channels": list(channels) + list(playlists),
         "date_range": date_range,
         "corpus_language": corpus_lang,
+        "corpus_language_detected": lang_detected,
         "answer_language": answer_language,
         "quote_style": qs,
+        # What the user asked for ("auto" or a fixed style), so `update` can
+        # resolve "auto" again when the corpus language changes.
+        "quote_style_requested": quote_style,
         "embedding_model": model_name,
         "embedding_dim": 1024 if multilingual else 384,
         "transcript_source_counts": summary.get("by_source", {}),
@@ -424,6 +437,7 @@ def run(*, channels, since, until, max_n, playlists, title_include, title_exclud
         "title_exclude": cfg.title_exclude,
         "playlists": list(playlists),
         "extra_ids": sorted(cfg.manual_ids),
+        "whisper_skip_if_no_captions": bool(whisper_skip_if_no_captions),
         "created_at": now_iso,
     }))
 
@@ -442,7 +456,14 @@ def run(*, channels, since, until, max_n, playlists, title_include, title_exclud
         # resumable advisor (re-running bootstrap here switches to update
         # mode). Don't spend LLM calls drafting SKILL.md or evals from a
         # partial corpus: write the stub + AI hand-off instead, and let the
-        # CLI exit non-zero with the retry command.
+        # CLI exit non-zero with the retry command. The evals this run would
+        # have generated are marked pending; the first update that finishes
+        # without a block generates them.
+        if not no_evals and not effective_no_llm:
+            meta["evals_pending"] = True
+            (out / "references" / "corpus_meta.json").write_text(
+                json.dumps(meta, indent=2, ensure_ascii=False)
+            )
         _write_stub_skill(
             out,
             meta=meta,

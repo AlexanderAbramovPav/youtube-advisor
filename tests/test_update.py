@@ -307,3 +307,270 @@ def test_regen_uses_stored_intent_and_drops_stale_handoff(tmp_path):
         run(advisor_dir=str(out), yes=True, regen_skill_md=True, no_llm=False)
     assert gen.call_args.kwargs["user_intent"] == "pricing advice"
     assert not (out / ".pending-llm-draft.json").exists()
+
+
+# ----- resume after a blocked bootstrap -----
+
+def _ingest_writing(vid, lang="en", blocked=False):
+    def _ingest(videos, out_dir, **kw):
+        write_transcript(out_dir, {"video_id": vid, "title": "t",
+                                   "published_date": "2024-06-01", "channel": "@yc"},
+                         [{"start": 0, "duration": 1, "text": "privet"}], "captions", lang)
+        s = {"ingested": 1, "skipped": 0, "failed": int(blocked),
+             "by_source": {"captions": 1}}
+        if blocked:
+            s["by_source"]["failed:blocked"] = 1
+            s.update(blocked=True, not_attempted=0, block_detail="x")
+        return s
+    return _ingest
+
+
+def _empty_bootstrap_advisor(tmp_path, **meta_overrides):
+    """State a bootstrap leaves when YouTube blocked the first video."""
+    out = _setup_advisor(tmp_path, existing_ids=())
+    meta_p = out / "references" / "corpus_meta.json"
+    meta = json.loads(meta_p.read_text())
+    meta.update({"n_videos": 0, "corpus_language": "en",
+                 "corpus_language_detected": False,
+                 "answer_language": "en", "quote_style": "quote-only",
+                 "quote_style_requested": "auto",
+                 "corpus_version": "2024-06-01/3"})
+    meta.update(meta_overrides)
+    meta_p.write_text(json.dumps(meta))
+    return out
+
+
+def _run_update(out, ingest, **kw):
+    with patch("youtube_advisor.update.resolve_channel",
+               return_value=[_stub_video(v) for v in ("a", "b", "c")]), \
+         patch("youtube_advisor.update.run_ingest", side_effect=ingest) as ing, \
+         patch("youtube_advisor.update.build_embeddings"), \
+         patch("youtube_advisor.update.gen_bench") as bench, \
+         patch("youtube_advisor.update.run_evals",
+               return_value={"total": 0, "passed": 0, "delta_passed": None}) as evals:
+        result = run(advisor_dir=str(out), yes=True, **kw)
+    meta = json.loads((out / "references" / "corpus_meta.json").read_text())
+    return result, meta, {"ingest": ing, "gen_bench": bench, "run_evals": evals}
+
+
+def test_language_detected_after_empty_bootstrap_and_auto_quote_style_resolved(tmp_path):
+    out = _empty_bootstrap_advisor(tmp_path)
+    (out / ".pending-llm-draft.json").write_text("{}")
+    _, meta, _ = _run_update(out, _ingest_writing("a", lang="ru"), no_llm=True)
+    assert meta["corpus_language"] == "ru"
+    assert meta["corpus_language_detected"] is True
+    # answer en, corpus ru → "auto" resolves to translation-first now.
+    assert meta["quote_style"] == "translation-first"
+    # The stub and the AI hand-off are re-rendered with the new values.
+    assert "corpus `ru`" in (out / "README.md").read_text()
+    handoff = json.loads((out / ".pending-llm-draft.json").read_text())
+    assert handoff["quote_style"] == "translation-first"
+    assert handoff["corpus_meta"]["corpus_language"] == "ru"
+
+
+def test_fixed_quote_style_kept_when_language_detected(tmp_path):
+    out = _empty_bootstrap_advisor(tmp_path, quote_style_requested="quote-only")
+    _, meta, _ = _run_update(out, _ingest_writing("a", lang="ru"), no_llm=True)
+    assert meta["corpus_language"] == "ru"
+    assert meta["quote_style"] == "quote-only"
+
+
+def test_language_detected_once_then_left_alone(tmp_path):
+    out = _empty_bootstrap_advisor(tmp_path)
+    _run_update(out, _ingest_writing("a", lang="ru"), no_llm=True)
+    _, meta, _ = _run_update(out, _ingest_writing("b", lang="en"), no_llm=True)
+    assert meta["corpus_language"] == "ru"
+
+
+def test_language_detected_from_transcripts_of_a_blocked_update(tmp_path):
+    out = _empty_bootstrap_advisor(tmp_path)
+    _, meta, _ = _run_update(out, _ingest_writing("a", lang="ru", blocked=True), no_llm=True)
+    assert meta["corpus_language"] == "ru"
+
+
+def test_legacy_meta_without_marker(tmp_path):
+    """No marker: an empty stored corpus means the language was a placeholder.
+    Without quote_style_requested, the stored style is kept as a fixed one."""
+    out = _empty_bootstrap_advisor(tmp_path)
+    meta_p = out / "references" / "corpus_meta.json"
+    meta = json.loads(meta_p.read_text())
+    del meta["corpus_language_detected"], meta["quote_style_requested"]
+    meta_p.write_text(json.dumps(meta))
+    _, meta, _ = _run_update(out, _ingest_writing("a", lang="ru"), no_llm=True)
+    assert meta["corpus_language"] == "ru"
+    assert meta["quote_style"] == "quote-only"
+
+
+def test_legacy_meta_with_corpus_keeps_language(tmp_path):
+    out = _setup_advisor(tmp_path, existing_ids=("a",))
+    _, meta, _ = _run_update(out, _ingest_writing("b", lang="ru"), no_llm=True)
+    assert "corpus_language" not in meta
+    assert meta["quote_style"] == "quote-only"
+
+
+def test_whisper_skip_saved_at_bootstrap_is_honoured(tmp_path):
+    out = _setup_advisor(tmp_path, existing_ids=("a",))
+    filt_p = out / "references" / "selection_filter.yaml"
+    filt = yaml.safe_load(filt_p.read_text())
+    filt["whisper_skip_if_no_captions"] = True
+    filt_p.write_text(yaml.safe_dump(filt))
+    _, _, m = _run_update(out, _ingest_writing("b"), no_llm=True)
+    assert m["ingest"].call_args.kwargs["skip_whisper"] is True
+
+
+def test_whisper_runs_when_flag_not_saved(tmp_path):
+    out = _setup_advisor(tmp_path, existing_ids=("a",))
+    _, _, m = _run_update(out, _ingest_writing("b"), no_llm=True)
+    assert m["ingest"].call_args.kwargs["skip_whisper"] is False
+
+
+def test_whisper_skip_override_is_saved(tmp_path):
+    out = _setup_advisor(tmp_path, existing_ids=("a",))
+    _, _, m = _run_update(out, _ingest_writing("b"), no_llm=True,
+                          whisper_skip_if_no_captions=True)
+    assert m["ingest"].call_args.kwargs["skip_whisper"] is True
+    filt = yaml.safe_load((out / "references" / "selection_filter.yaml").read_text())
+    assert filt["whisper_skip_if_no_captions"] is True
+
+
+def test_first_clean_update_generates_pending_evals(tmp_path):
+    out = _empty_bootstrap_advisor(tmp_path, evals_pending=True)
+    result, meta, m = _run_update(out, _ingest_writing("a"), no_llm=False,
+                                  run_evals_=True)
+    m["gen_bench"].assert_called_once_with(out)
+    m["run_evals"].assert_called_once_with(out)  # not twice with --run-evals
+    assert result["evals"] is not None
+    assert "evals_pending" not in meta
+
+    # The next update does not generate them again.
+    _, _, m = _run_update(out, _ingest_writing("b"), no_llm=False)
+    m["gen_bench"].assert_not_called()
+
+
+def test_blocked_update_keeps_evals_pending(tmp_path):
+    out = _empty_bootstrap_advisor(tmp_path, evals_pending=True)
+    result, meta, m = _run_update(out, _ingest_writing("a", blocked=True), no_llm=False)
+    m["gen_bench"].assert_not_called()
+    m["run_evals"].assert_not_called()
+    assert meta["evals_pending"] is True
+    assert "youtube-advisor update --advisor" in result["guide"]
+
+
+def test_no_llm_update_keeps_evals_pending(tmp_path):
+    out = _empty_bootstrap_advisor(tmp_path, evals_pending=True)
+    _, meta, m = _run_update(out, _ingest_writing("a"), no_llm=True)
+    m["gen_bench"].assert_not_called()
+    assert meta["evals_pending"] is True
+
+
+def test_pending_evals_generated_when_nothing_new(tmp_path):
+    """The update that landed the transcripts ran with --no-llm; a later one
+    with nothing new still generates the pending evals."""
+    out = _empty_bootstrap_advisor(tmp_path, evals_pending=True)
+    _run_update(out, _ingest_writing("a"), no_llm=True)
+    for vid in ("b", "c"):
+        write_transcript(out / "transcripts",
+                         {"video_id": vid, "title": "t", "published_date": "2024-06-01",
+                          "channel": "@yc"},
+                         [{"start": 0, "duration": 1, "text": "x"}], "captions", "en")
+    _, meta, m = _run_update(out, _ingest_writing("z"), no_llm=False)
+    m["ingest"].assert_not_called()
+    m["gen_bench"].assert_called_once_with(out)
+    assert "evals_pending" not in meta
+
+
+def test_stub_refreshed_when_placeholder_language_is_confirmed(tmp_path):
+    """English channel: "en" is detected again, but the hand-off a blocked
+    bootstrap wrote had no samples and 0 videos, so it is still rewritten."""
+    out = _empty_bootstrap_advisor(tmp_path)
+    (out / ".pending-llm-draft.json").write_text(json.dumps({"samples": []}))
+    _, meta, _ = _run_update(out, _ingest_writing("a", lang="en"), no_llm=True)
+    assert meta["corpus_language"] == "en"
+    assert meta["corpus_language_detected"] is True
+    handoff = json.loads((out / ".pending-llm-draft.json").read_text())
+    assert [s["video_id"] for s in handoff["samples"]] == ["a"]
+    assert handoff["corpus_meta"]["n_videos"] == 1
+
+
+def test_pending_evals_failure_does_not_fail_update(tmp_path):
+    out = _empty_bootstrap_advisor(tmp_path, evals_pending=True)
+    with patch("youtube_advisor.update.resolve_channel",
+               return_value=[_stub_video("a")]), \
+         patch("youtube_advisor.update.run_ingest", side_effect=_ingest_writing("a")), \
+         patch("youtube_advisor.update.build_embeddings"), \
+         patch("youtube_advisor.update.gen_bench", side_effect=RuntimeError("no credit")), \
+         patch("youtube_advisor.update.run_evals") as evals:
+        result = run(advisor_dir=str(out), yes=True, no_llm=False)
+    evals.assert_not_called()
+    assert "+1 new" in result["guide"]
+    meta = json.loads((out / "references" / "corpus_meta.json").read_text())
+    assert meta["evals_pending"] is True
+
+
+def test_pending_evals_kept_when_run_evals_fails(tmp_path):
+    out = _empty_bootstrap_advisor(tmp_path, evals_pending=True)
+    with patch("youtube_advisor.update.resolve_channel",
+               return_value=[_stub_video("a")]), \
+         patch("youtube_advisor.update.run_ingest", side_effect=_ingest_writing("a")), \
+         patch("youtube_advisor.update.build_embeddings"), \
+         patch("youtube_advisor.update.gen_bench"), \
+         patch("youtube_advisor.update.run_evals", side_effect=ValueError("bad json")):
+        run(advisor_dir=str(out), yes=True, no_llm=False)
+    meta = json.loads((out / "references" / "corpus_meta.json").read_text())
+    assert meta["evals_pending"] is True
+
+
+def test_benchmark_written_by_the_ai_is_kept(tmp_path):
+    out = _empty_bootstrap_advisor(tmp_path, evals_pending=True)
+    (out / "evals").mkdir()
+    (out / "evals" / "benchmark.json").write_text('{"questions": []}')
+    _, meta, m = _run_update(out, _ingest_writing("a"), no_llm=False)
+    m["gen_bench"].assert_not_called()
+    m["run_evals"].assert_called_once_with(out)
+    assert "evals_pending" not in meta
+
+
+def _writing_gen_bench(out):
+    (out / "evals").mkdir(exist_ok=True)
+    (out / "evals" / "benchmark.json").write_text('{"questions": []}')
+
+
+def test_failed_eval_run_is_retried_by_next_update(tmp_path):
+    """gen_bench wrote the benchmark, then run_evals failed: the next update
+    runs the evals (without a new benchmark) before clearing the marker."""
+    out = _empty_bootstrap_advisor(tmp_path, evals_pending=True)
+    with patch("youtube_advisor.update.resolve_channel",
+               return_value=[_stub_video("a"), _stub_video("b")]), \
+         patch("youtube_advisor.update.run_ingest", side_effect=_ingest_writing("a")), \
+         patch("youtube_advisor.update.build_embeddings"), \
+         patch("youtube_advisor.update.gen_bench", side_effect=_writing_gen_bench), \
+         patch("youtube_advisor.update.run_evals", side_effect=ValueError("bad")):
+        run(advisor_dir=str(out), yes=True, no_llm=False)
+    meta = json.loads((out / "references" / "corpus_meta.json").read_text())
+    assert meta["evals_pending"] is True
+    _, meta, m = _run_update(out, _ingest_writing("b"), no_llm=False)
+    m["gen_bench"].assert_not_called()
+    m["run_evals"].assert_called_once_with(out)
+    assert "evals_pending" not in meta
+
+
+def test_failed_pending_evals_do_not_fall_through_to_run_evals(tmp_path):
+    """With --run-evals, a failed pending attempt must not be followed by an
+    unguarded eval run (no benchmark exists)."""
+    out = _empty_bootstrap_advisor(tmp_path, evals_pending=True)
+    with patch("youtube_advisor.update.resolve_channel",
+               return_value=[_stub_video("a")]), \
+         patch("youtube_advisor.update.run_ingest", side_effect=_ingest_writing("a")), \
+         patch("youtube_advisor.update.build_embeddings"), \
+         patch("youtube_advisor.update.gen_bench", side_effect=RuntimeError("no credit")), \
+         patch("youtube_advisor.update.run_evals") as evals:
+        result = run(advisor_dir=str(out), yes=True, no_llm=False, run_evals_=True)
+    evals.assert_not_called()
+    assert "+1 new" in result["guide"]
+
+
+def test_no_evals_drops_pending_evals(tmp_path):
+    out = _empty_bootstrap_advisor(tmp_path, evals_pending=True)
+    _, meta, m = _run_update(out, _ingest_writing("a"), no_llm=False, no_evals=True)
+    m["gen_bench"].assert_not_called()
+    assert "evals_pending" not in meta

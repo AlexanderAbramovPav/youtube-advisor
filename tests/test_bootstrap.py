@@ -374,3 +374,88 @@ def test_meta_records_intent_and_counts_only_landed_videos(tmp_path, mock_pipeli
     meta = json.loads((out / "references" / "corpus_meta.json").read_text())
     assert meta["n_videos"] == 2
     assert meta["user_intent"] == "test"
+
+
+# ----- state a later update needs -----
+
+def test_selection_filter_saves_whisper_skip(tmp_path, mock_pipeline):
+    import yaml
+    out = tmp_path / "yc-advisor"
+    run(**_base_kwargs(out, whisper_skip_if_no_captions=True))
+    snap = yaml.safe_load((out / "references" / "selection_filter.yaml").read_text())
+    assert snap["whisper_skip_if_no_captions"] is True
+
+
+@pytest.mark.parametrize("no_llm,no_evals,pending", [
+    (False, False, True),   # bootstrap would have generated evals
+    (True, False, False),   # --no-llm bootstrap never generates evals
+    (False, True, False),   # --no-evals
+])
+def test_blocked_bootstrap_marks_evals_pending(tmp_path, mock_no_llm_pipeline,
+                                               no_llm, no_evals, pending):
+    from youtube_advisor.bootstrap import run_ingest as patched_ingest
+    patched_ingest.side_effect = lambda *a, **kw: dict(_BLOCKED_SUMMARY)
+    out = tmp_path / "yc-advisor"
+    run(**_base_kwargs(out, no_llm=no_llm, no_evals=no_evals))
+    meta = json.loads((out / "references" / "corpus_meta.json").read_text())
+    assert meta.get("evals_pending", False) is pending
+    # No transcripts: the stored "en" is a placeholder.
+    assert meta["corpus_language_detected"] is False
+    assert meta["quote_style_requested"] == "auto"
+
+
+def test_clean_bootstrap_marks_language_detected(tmp_path, mock_no_llm_pipeline):
+    out = tmp_path / "yc-advisor"
+    run(**_base_kwargs(out, quote_style="quote-only"))
+    meta = json.loads((out / "references" / "corpus_meta.json").read_text())
+    assert meta["corpus_language_detected"] is True
+    assert meta["quote_style_requested"] == "quote-only"
+    assert "evals_pending" not in meta
+
+
+@pytest.mark.parametrize("flag,expected", [(False, None), (True, True)])
+def test_resume_passes_whisper_skip_only_when_given(tmp_path, flag, expected):
+    out = tmp_path / "yc-advisor"
+    (out / "references").mkdir(parents=True)
+    (out / "references" / "selection_filter.yaml").write_text("version: 1\n")
+    with patch("youtube_advisor.update.run", return_value={"guide": "G"}) as up:
+        run(**_base_kwargs(out, whisper_skip_if_no_captions=flag, no_evals=flag))
+    assert up.call_args.kwargs["whisper_skip_if_no_captions"] is expected
+    assert up.call_args.kwargs["no_evals"] is flag
+
+
+def test_blocked_bootstrap_then_clean_update(tmp_path, mock_no_llm_pipeline):
+    """End to end over the resume path: a bootstrap blocked on its first
+    video, then an update that lands Russian transcripts without a block."""
+    from youtube_advisor.bootstrap import run_ingest as patched_ingest
+    from youtube_advisor.ingest.normalize import write_transcript
+    from youtube_advisor.update import run as update_run
+    patched_ingest.side_effect = lambda *a, **kw: dict(_BLOCKED_SUMMARY)
+    out = tmp_path / "yc-advisor"
+    run(**_base_kwargs(out, no_llm=False, answer_language="en"))
+
+    def ingest(videos, out_dir, **kw):
+        for v in videos:
+            write_transcript(out_dir, v, [{"start": 0, "duration": 1, "text": "privet"}],
+                             "captions", "ru")
+        return {"ingested": len(videos), "skipped": 0, "failed": 0,
+                "by_source": {"captions": len(videos)}}
+
+    # The fixture stubs language detection to "en"; use the real one here.
+    with patch("youtube_advisor.bootstrap._detect_corpus_language",
+               side_effect=_detect_corpus_language), \
+         patch("youtube_advisor.update.resolve_channel",
+               return_value=[_stub_video("a"), _stub_video("b"), _stub_video("c")]), \
+         patch("youtube_advisor.update.run_ingest", side_effect=ingest), \
+         patch("youtube_advisor.update.build_embeddings"), \
+         patch("youtube_advisor.update.gen_bench") as bench, \
+         patch("youtube_advisor.update.run_evals",
+               return_value={"total": 1, "passed": 1, "delta_passed": None}) as evals:
+        result = update_run(advisor_dir=str(out), yes=True, no_llm=False)
+    meta = json.loads((out / "references" / "corpus_meta.json").read_text())
+    assert meta["corpus_language"] == "ru"
+    assert meta["quote_style"] == "translation-first"
+    bench.assert_called_once_with(out)
+    evals.assert_called_once_with(out)
+    assert "evals_pending" not in meta
+    assert "blocked" not in result["summary"]

@@ -1,5 +1,6 @@
 from __future__ import annotations
 import concurrent.futures as cf
+import contextlib
 import logging
 import pathlib
 import random
@@ -20,14 +21,31 @@ BLOCKED = "failed:blocked"
 NOT_ATTEMPTED = "not-attempted"
 
 
-class _RunState:
-    """Block bookkeeping shared by the worker threads of one run_ingest call."""
+# Captions-pass worker counts. The captions API (tier 1) only sends a cookie
+# file, never browser cookies, so its own limit depends on that, not on
+# whether the user passed any cookies.
+AUTH_WORKERS = 8
+UNAUTH_WORKERS = 2
 
-    def __init__(self) -> None:
+
+class _RunState:
+    """Block bookkeeping shared by the worker threads of one run_ingest call.
+
+    ``tier1_gate`` caps how many tier-1 (captions API) calls run at once;
+    ``tier1_sleep`` / ``tier2_sleep`` add a polite random sleep before each
+    call of that tier. The defaults (no cap, no sleep) suit direct callers.
+    """
+
+    def __init__(self, tier1_slots: int | None = None,
+                 tier1_sleep: bool = False, tier2_sleep: bool = False) -> None:
         self.stop = threading.Event()        # no more YouTube requests this run
         self.skip_tier1 = threading.Event()  # tier 1 is blocked; cookied tier 2 is not
         self.block_detail: str | None = None
         self._lock = threading.Lock()
+        self.tier1_gate = (threading.BoundedSemaphore(tier1_slots)
+                           if tier1_slots else contextlib.nullcontext())
+        self.tier1_sleep = tier1_sleep
+        self.tier2_sleep = tier2_sleep
 
     def block(self, tier_name: str, e: CaptionsBlocked) -> None:
         with self._lock:
@@ -57,12 +75,25 @@ class _RunState:
 def _existing(out_dir: pathlib.Path, video_id: str) -> bool:
     return any(out_dir.glob(f"*-{video_id}.md"))
 
+
+def _call_tier(fn, vid: str, cookies: dict | None, polite_sleep: bool,
+               state: _RunState):
+    """One captions call, or None when the run stopped before it was sent."""
+    if state.stop.is_set():
+        return None
+    if polite_sleep:
+        # Stagger unauthenticated calls to avoid an IP-level rate limit.
+        time.sleep(random.uniform(0.5, 2.0))
+    if state.stop.is_set():
+        return None
+    return fn(vid, cookies=cookies) if cookies is not None else fn(vid)
+
+
 def _ingest_one(
     meta: dict,
     out_dir: pathlib.Path,
     skip_whisper: bool,
     cookies: dict | None = None,
-    polite_sleep: bool = False,
     state: _RunState | None = None,
 ) -> str:
     vid = meta["video_id"]
@@ -74,13 +105,18 @@ def _ingest_one(
         if state.stop.is_set():
             return NOT_ATTEMPTED
         try:
-            if polite_sleep:
-                # Stagger captions API calls to avoid IP-level rate-limit when
-                # the caller is unauthenticated.
-                time.sleep(random.uniform(0.5, 2.0))
-            if state.stop.is_set():
+            if tier_name == "tier1":
+                with state.tier1_gate:
+                    # Re-check: a worker may have waited here while another
+                    # one hit a block.
+                    if state.skip_tier1.is_set():
+                        continue
+                    got = _call_tier(fn, vid, cookies, state.tier1_sleep, state)
+            else:
+                got = _call_tier(fn, vid, cookies, state.tier2_sleep, state)
+            if got is None:
                 return NOT_ATTEMPTED
-            segs, lang = fn(vid, cookies=cookies) if cookies is not None else fn(vid)
+            segs, lang = got
             write_transcript(out_dir, meta, segs, src, lang)
             return src
         except CaptionsBlocked as e:
@@ -147,10 +183,15 @@ def run_ingest(
 ) -> dict:
     """Ingest videos through the Tier 1 → 2 → 3 cascade.
 
-    When ``cookies`` is unset/empty we lower captions-pass concurrency to 2
-    AND add a 0.5–2.0s random sleep per call to reduce IP-level rate-limit
-    risk. When cookies are present we default to 8-way concurrency. Pass an
-    explicit ``max_concurrent`` to override either default.
+    Each captions tier runs at its own default, set by whether that tier
+    sends cookies. Tier 1 (captions API) sends only a cookie file; tier 2
+    (yt-dlp) sends a cookie file or browser cookies. An authenticated tier
+    gets up to 8 concurrent calls; an unauthenticated one gets 2, plus a
+    0.5–2.0s random sleep before each call, to reduce IP-level rate-limit
+    risk. So with ``--cookies-from-browser`` the pool has 8 workers but at
+    most 2 tier-1 calls run at once, each after a sleep. An explicit
+    ``max_concurrent`` sets the pool size and lifts the tier-1 cap; the
+    sleeps stay.
 
     Optional ``progress``: a ``_progress.Progress``-shaped object; we call
     ``progress.tick(video_id, title, source)`` after each video lands so a
@@ -167,11 +208,15 @@ def run_ingest(
     errors_log = out_dir.parent / "ingest.errors.log"
     summary = {"ingested": 0, "skipped": 0, "failed": 0, "by_source": {}}
 
-    authenticated = bool(cookies)
+    tier1_auth = tier1.authenticates(cookies)
+    tier2_auth = bool(cookies)
+    tier1_slots = None
     if max_concurrent is None:
-        max_concurrent = 8 if authenticated else 2
-    polite_sleep = not authenticated
-    state = _RunState()
+        max_concurrent = AUTH_WORKERS if tier2_auth else UNAUTH_WORKERS
+        if not tier1_auth:
+            tier1_slots = UNAUTH_WORKERS
+    state = _RunState(tier1_slots=tier1_slots,
+                      tier1_sleep=not tier1_auth, tier2_sleep=not tier2_auth)
 
     pending = [v for v in videos if not _existing(out_dir, v["video_id"])]
     summary["skipped"] = len(videos) - len(pending)
@@ -179,7 +224,7 @@ def run_ingest(
     # Pass 1: Tier 1 + Tier 2 in parallel pool (skip_whisper=True keeps the pool network-only).
     def network_only(v):
         return _ingest_one(v, out_dir, skip_whisper=True,
-                           cookies=cookies, polite_sleep=polite_sleep, state=state)
+                           cookies=cookies, state=state)
     if pending:
         with cf.ThreadPoolExecutor(max_workers=min(max_concurrent, max(1, len(pending)))) as ex:
             results = list(ex.map(network_only, pending))
@@ -205,11 +250,13 @@ def run_ingest(
 
     # Pass 2: Tier 3 serial (Whisper saturates CPU/MLX itself).
     if not skip_whisper and need_whisper:
+        # Serial pass: no polite sleep before its captions re-check.
+        state.tier1_sleep = state.tier2_sleep = False
         for v in need_whisper:
             # After a block, Whisper would download audio from YouTube too.
             r = (NOT_ATTEMPTED if state.stop.is_set() else
-                 _ingest_one(v, out_dir, skip_whisper=False,
-                             cookies=cookies, polite_sleep=False, state=state))
+                 _ingest_one(v, out_dir, skip_whisper=False, cookies=cookies,
+                             state=state))
             if r == NOT_ATTEMPTED:
                 not_attempted.append(v)
                 continue
