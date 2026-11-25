@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Video length selection on `bootstrap`: `--min-duration` and `--max-duration` (inclusive bounds; accept plain seconds like `3600`, units like `90m`, `2h`, `1h30m`, `MM:SS`, and `H:MM:SS`). Runs before `--max`, keeps manual `--ids` unconditionally, and keeps videos with unknown length (missing, `0`, or non-numeric) with a single warning showing the count. Saved in `references/selection_filter.yaml` and reused automatically by `update` (older filter files without the keys remain unbounded and untouched). Readable bounds (`≥ 1h`, `≤ 20m`) are shown in the bootstrap confirmation prompt and post-run guide.
+
 ### Changed
 - Requires `youtube-transcript-api>=1.0.0`, the first version with `RequestBlocked` / `IpBlocked` and the `YouTubeTranscriptApi().list()` API already in use.
 - Embedding builds now spot changed transcripts by a hash of their content. The hashes are stored in `embeddings.npz`, so a `git checkout` or `touch` no longer re-embeds the corpus. An `embeddings.npz` written by an older version gets its hashes on the next run, and its vectors are kept rather than recomputed. Only transcripts newer than that file's last build are re-embedded. To force a full re-embed, delete `references/embeddings.npz`.
@@ -53,7 +56,6 @@ First public beta. Build a Claude Code advisor skill from any YouTube channel.
 
 ### Known limitations
 - Single channel per advisor (multi-channel rollups planned for v0.2).
-- Length-based filtering (e.g. "interviews > 60 minutes") not yet a selection flag.
 - LangDetect on update doesn't re-fire — corpus language persists from bootstrap.
 
 [Unreleased]: https://github.com/AlexanderAbramovPav/youtube-advisor/compare/v0.1.0...HEAD

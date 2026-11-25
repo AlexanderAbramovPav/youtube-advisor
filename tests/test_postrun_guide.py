@@ -143,3 +143,32 @@ def test_update_guide_eval_delta_zero(tmp_path):
     out = update_guide(advisor, n_new=12, n_removed=0,
                        eval_summary={"passed": 8, "total": 8, "delta_passed": 0})
     assert "(no change)" in out
+
+
+# ----- duration bounds in bootstrap_guide -----
+
+def test_bootstrap_guide_shows_duration_bounds_when_set(tmp_path):
+    import yaml
+    for name, filt, expected in [
+        ("min-only", {"min_duration": 3600, "max_duration": None}, "Duration filter: ≥ 1h."),
+        ("max-only", {"min_duration": None, "max_duration": 1200}, "Duration filter: ≤ 20m."),
+        ("both", {"min_duration": 1200, "max_duration": 5400}, "Duration filter: ≥ 20m, ≤ 1h30m."),
+    ]:
+        advisor = tmp_path / f"{name}-advisor"
+        advisor.mkdir()
+        _write_meta(advisor)
+        (advisor / "references" / "selection_filter.yaml").write_text(yaml.safe_dump(filt))
+        out = bootstrap_guide(advisor)
+        assert expected in out
+
+
+def test_bootstrap_guide_omits_duration_when_unset(tmp_path):
+    import yaml
+    advisor = tmp_path / "yc-advisor"
+    advisor.mkdir()
+    _write_meta(advisor)
+    (advisor / "references" / "selection_filter.yaml").write_text(
+        yaml.safe_dump({"min_duration": None, "max_duration": None})
+    )
+    out = bootstrap_guide(advisor)
+    assert "Duration filter:" not in out

@@ -32,10 +32,17 @@ def _load_state(advisor_dir: pathlib.Path) -> tuple[dict, dict]:
     return filt, meta
 
 
-def _save_state(advisor_dir: pathlib.Path, filt: dict, meta: dict) -> None:
+def _save_state(
+    advisor_dir: pathlib.Path,
+    filt: dict,
+    meta: dict,
+    *,
+    save_filter: bool = True,
+) -> None:
     refs = advisor_dir / "references"
     refs.mkdir(parents=True, exist_ok=True)
-    (refs / "selection_filter.yaml").write_text(dump_yaml(filt))
+    if save_filter:
+        (refs / "selection_filter.yaml").write_text(dump_yaml(filt))
     (refs / "corpus_meta.json").write_text(json.dumps(meta, indent=2, ensure_ascii=False))
 
 
@@ -59,6 +66,8 @@ def _filter_from_yaml(filt: dict) -> FilterConfig:
         max=filt.get("max", 500),
         title_include=filt.get("title_include"),
         title_exclude=filt.get("title_exclude"),
+        min_duration=filt.get("min_duration"),
+        max_duration=filt.get("max_duration"),
         playlist_ids=_playlist_ids_from_urls(filt.get("playlists", [])),
         manual_ids=set(filt.get("extra_ids", [])),
     )
@@ -151,7 +160,7 @@ def _generate_pending_evals(out: pathlib.Path, filt: dict,
                     "next update tries again.", e)
         return True, None
     meta.pop("evals_pending", None)
-    _save_state(out, filt, meta)
+    _save_state(out, filt, meta, save_filter=False)
     return True, summary
 
 
@@ -182,19 +191,24 @@ def run(*, advisor_dir, since=None, max_n=None, ids=None,
 
     # CLI overrides — normalise dates at the boundary so downstream
     # `date.fromisoformat()` never sees a datetime-shaped string.
+    filt_changed = False
     if since is not None:
         d = since.date() if hasattr(since, "date") else since
         filt["since"] = d.isoformat() if hasattr(d, "isoformat") else d
+        filt_changed = True
     if max_n is not None:
         filt["max"] = max_n
+        filt_changed = True
     if ids is not None:
         ids_path = pathlib.Path(ids)
         extra = {line.strip() for line in ids_path.read_text().splitlines() if line.strip()}
         filt["extra_ids"] = sorted(set(filt.get("extra_ids", [])) | extra)
+        filt_changed = True
     if no_evals:
         meta.pop("evals_pending", None)
     if whisper_skip_if_no_captions is not None:
         filt["whisper_skip_if_no_captions"] = bool(whisper_skip_if_no_captions)
+        filt_changed = True
 
     # Resolve LLM mode up-front so the early-return path can gate evals correctly.
     effective_no_llm = should_skip_llm(no_llm)
@@ -210,18 +224,24 @@ def run(*, advisor_dir, since=None, max_n=None, ids=None,
         build_index(out / "transcripts", out / "references", incremental=False)
         build_embeddings(out / "transcripts", out / "references",
                          model_name=meta["embedding_model"], incremental=False)
-        _save_state(out, filt, meta)
+        _save_state(out, filt, meta, save_filter=filt_changed)
         return {"guide": update_guide(out, 0, 0), "evals": None}
 
     # Re-resolve channels. Same capped-listing heuristic as bootstrap: when
-    # only `max` narrows selection (no date/title filters), the newest-first
+    # only `max` narrows selection (no date/title/duration filters), the newest-first
     # /videos tab top max*3 is guaranteed to contain the max newest videos —
     # avoids the per-video date-resolution pass over the entire channel.
     # Manual extra_ids are resolved individually below, so the cap never
     # hides them.
     listing_limit = None
-    if filt.get("max") and not filt.get("since") and not filt.get("until") \
-            and not filt.get("title_include"):
+    if (
+        filt.get("max")
+        and not filt.get("since")
+        and not filt.get("until")
+        and not filt.get("title_include")
+        and filt.get("min_duration") is None
+        and filt.get("max_duration") is None
+    ):
         listing_limit = filt["max"] * 3
     candidates = []
     for ch in filt["channels"]:
@@ -255,7 +275,7 @@ def run(*, advisor_dir, since=None, max_n=None, ids=None,
         # Persist any CLI overrides even when corpus didn't change.
         if _refresh_corpus_language(out, meta):
             _rewrite_stub(out, meta)
-        _save_state(out, filt, meta)
+        _save_state(out, filt, meta, save_filter=filt_changed)
         attempted, eval_summary = (_generate_pending_evals(out, filt, meta)
                                    if not effective_no_llm else (False, None))
         if not attempted and run_evals_ and not effective_no_llm:
@@ -309,7 +329,7 @@ def run(*, advisor_dir, since=None, max_n=None, ids=None,
 
     if _refresh_corpus_language(out, meta):
         _rewrite_stub(out, meta)
-    _save_state(out, filt, meta)
+    _save_state(out, filt, meta, save_filter=filt_changed)
 
     blocked = bool(summary.get("blocked"))
     if blocked and (regen_skill_md or run_evals_):
