@@ -5,7 +5,7 @@ import pathlib
 import yaml
 
 from ._naming import short_slug
-from .filters import format_duration_bounds
+from .filters import duration_from_saved, format_duration_bounds
 
 # Back-compat alias for tests that import the underscore name.
 _short_slug = short_slug
@@ -40,7 +40,11 @@ def _duration_filter_line(advisor_dir: pathlib.Path) -> str:
     if not filt_path.exists():
         return ""
     filt = yaml.safe_load(filt_path.read_text()) or {}
-    bounds = format_duration_bounds(filt.get("min_duration"), filt.get("max_duration"))
+    try:
+        bounds = format_duration_bounds(duration_from_saved(filt.get("min_duration")),
+                                        duration_from_saved(filt.get("max_duration")))
+    except ValueError:
+        return ""  # a hand-edited bad value; `update` reports it
     return f"Duration filter: {bounds}.\n" if bounds else ""
 
 

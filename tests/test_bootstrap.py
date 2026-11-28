@@ -485,6 +485,8 @@ def test_cli_bootstrap_duration_flags_parsed(tmp_path):
     ["--min-duration", "-10m"],
     ["--max-duration=-1"],
     ["--min-duration", "2h", "--max-duration", "1h"],
+    ["--max-duration", "0"],
+    ["--max-duration", "0:00"],
 ])
 def test_cli_bootstrap_duration_errors_exit_2_without_traceback(tmp_path, args):
     from click.testing import CliRunner

@@ -86,6 +86,28 @@ def format_duration_bounds(min_duration: int | None, max_duration: int | None) -
     return ", ".join(parts) if parts else None
 
 
+def duration_from_saved(value) -> int | None:
+    """Turn a saved duration bound (selection_filter.yaml) into seconds.
+
+    Bootstrap writes whole seconds or null; a hand-edited file may hold the
+    CLI forms instead ('1h', '90m', '1:30:00'). Raises ValueError for any
+    other type or a negative number.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError(f"Invalid duration {value!r}: expected seconds or a duration string.")
+    if isinstance(value, int):
+        if value < 0:
+            raise ValueError(f"Invalid duration {value!r}: duration cannot be negative.")
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return duration_from_saved(int(value))
+    if isinstance(value, str):
+        return parse_duration(value)
+    raise ValueError(f"Invalid duration {value!r}: expected seconds or a duration string.")
+
+
 def _known_length(v: dict) -> float | None:
     raw = v.get("length_seconds")
     if isinstance(raw, bool) or not isinstance(raw, (int, float)):
@@ -134,10 +156,8 @@ def apply_filters(candidates: Iterable[dict], cfg: FilterConfig) -> list[dict]:
     inc_re = _compile_or_literal(cfg.title_include)
     exc_re = _compile_or_literal(cfg.title_exclude)
     has_duration_bound = cfg.min_duration is not None or cfg.max_duration is not None
-    unknown_duration_count = 0
 
     def keep(v: dict) -> bool:
-        nonlocal unknown_duration_count
         # Malformed published_date is a system-boundary failure (yt-dlp
         # response, manual --ids feed, etc.) — drop the video with a warning
         # rather than crashing the entire run.
@@ -159,9 +179,7 @@ def apply_filters(candidates: Iterable[dict], cfg: FilterConfig) -> list[dict]:
             return False
         if has_duration_bound:
             length = _known_length(v)
-            if length is None:
-                unknown_duration_count += 1
-            else:
+            if length is not None:
                 if cfg.min_duration is not None and length < cfg.min_duration:
                     return False
                 if cfg.max_duration is not None and length > cfg.max_duration:
@@ -169,13 +187,16 @@ def apply_filters(candidates: Iterable[dict], cfg: FilterConfig) -> list[dict]:
         return True
 
     kept = [v for v in rest if keep(v)]
-    if unknown_duration_count:
-        log.warning(
-            "Kept %d video(s) with unknown length (cannot check duration bounds).",
-            unknown_duration_count,
-        )
     kept.sort(key=lambda v: v["published_date"], reverse=True)
     kept = kept[: cfg.max]
+    if has_duration_bound:
+        # Count after the `max` cut: only videos that are really kept.
+        unknown = sum(1 for v in kept if _known_length(v) is None)
+        if unknown:
+            log.warning(
+                "Kept %d video(s) with unknown length (cannot check duration bounds).",
+                unknown,
+            )
 
     seen = {v["video_id"] for v in kept}
     out = kept + [m for m in manual_kept if m["video_id"] not in seen]

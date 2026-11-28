@@ -284,6 +284,8 @@ def run(*, channels, since, until, max_n, playlists, title_include, title_exclud
         raise click.UsageError("--min-duration cannot be negative.")
     if max_duration is not None and max_duration < 0:
         raise click.UsageError("--max-duration cannot be negative.")
+    if max_duration == 0:
+        raise click.UsageError("--max-duration must be greater than 0.")
     if min_duration is not None and max_duration is not None and min_duration > max_duration:
         raise click.UsageError(
             f"--min-duration ({format_duration(min_duration)}) cannot be greater than "

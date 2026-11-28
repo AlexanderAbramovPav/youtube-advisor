@@ -4,6 +4,7 @@ import pytest
 from youtube_advisor.filters import (
     FilterConfig,
     apply_filters,
+    duration_from_saved,
     format_duration,
     format_duration_bounds,
     parse_duration,
@@ -222,3 +223,29 @@ def test_duration_filter_runs_before_max_cut():
     cfg = FilterConfig(min_duration=3600, max=2)
     out = apply_filters(candidates, cfg)
     assert [v["video_id"] for v in out] == ["old_long_1", "old_long_2"]
+
+
+def test_unknown_length_warning_counts_only_videos_kept_after_max(caplog):
+    candidates = [vid(f"u{i}", published=f"2024-01-{i + 1:02d}", length_seconds=None)
+                  for i in range(5)]
+    candidates.append(vid("long_new", published="2024-02-01", length_seconds=4000))
+    with caplog.at_level(logging.WARNING, logger="youtube_advisor.filters"):
+        out = apply_filters(candidates, FilterConfig(min_duration=3600, max=3))
+    assert [v["video_id"] for v in out] == ["long_new", "u4", "u3"]
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert "Kept 2 video(s)" in warnings[0].getMessage()
+
+
+@pytest.mark.parametrize("value,expected", [
+    (None, None), (0, 0), (3600, 3600), (3600.0, 3600),
+    ("1h", 3600), ("90m", 5400), ("1:30:00", 5400), ("600", 600),
+])
+def test_duration_from_saved_accepts_seconds_and_cli_forms(value, expected):
+    assert duration_from_saved(value) == expected
+
+
+@pytest.mark.parametrize("value", [-1, True, "soon", 1.5, [3600]])
+def test_duration_from_saved_rejects_bad_values(value):
+    with pytest.raises(ValueError):
+        duration_from_saved(value)

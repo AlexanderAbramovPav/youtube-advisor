@@ -86,6 +86,8 @@ def bootstrap(**kw):
     """Create a new advisor skill from a YouTube channel."""
     min_d = kw.get("min_duration")
     max_d = kw.get("max_duration")
+    if max_d == 0:
+        raise click.UsageError("--max-duration must be greater than 0.")
     if min_d is not None and max_d is not None and min_d > max_d:
         raise click.UsageError(
             f"--min-duration ({format_duration(min_d)}) cannot be greater than "

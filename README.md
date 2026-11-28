@@ -155,7 +155,7 @@ youtube-advisor update --advisor ~/.claude/skills/yc-advisor --reindex-only
 youtube-advisor update --advisor ~/.claude/skills/yc-advisor --run-evals --yes
 ```
 
-`--min-duration` and `--max-duration` are inclusive and accept plain seconds (`3600`), unit forms (`90m`, `2h`, `1h30m`), `MM:SS`, or `H:MM:SS`. Videos whose length is unknown are kept (with a warning) rather than dropped silently, and duration filtering runs before `--max`.
+`--min-duration` and `--max-duration` are inclusive and accept plain seconds (`3600`), unit forms (`90m`, `2h`, `1h30m`), `MM:SS`, or `H:MM:SS`. Videos whose length is unknown are kept (with a warning) rather than dropped silently, and duration filtering runs before `--max`. A duration bound makes `bootstrap` and every `update` list the whole channel and look up each video's date (one yt-dlp call per video), as `--since` does; on a channel with 1,000+ videos pass `--cookies-from-browser`, or YouTube may block the run. To change the bounds of an existing advisor, edit `min_duration` / `max_duration` in `references/selection_filter.yaml` (seconds or the same forms).
 
 `youtube-advisor bootstrap --help` and `youtube-advisor update --help` print the full flag list.
 

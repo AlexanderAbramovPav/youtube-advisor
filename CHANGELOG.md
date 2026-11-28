@@ -9,12 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - Video length selection on `bootstrap`: `--min-duration` and `--max-duration` (inclusive bounds; accept plain seconds like `3600`, units like `90m`, `2h`, `1h30m`, `MM:SS`, and `H:MM:SS`). Runs before `--max`, keeps manual `--ids` unconditionally, and keeps videos with unknown length (missing, `0`, or non-numeric) with a single warning showing the count. Saved in `references/selection_filter.yaml` and reused automatically by `update` (older filter files without the keys remain unbounded and untouched). Readable bounds (`≥ 1h`, `≤ 20m`) are shown in the bootstrap confirmation prompt and post-run guide.
+- A duration bound turns off the capped channel listing, so `bootstrap` and each `update` look up the date of every video on the channel (one yt-dlp call per video, as with `--since`).
 
 ### Changed
 - Requires `youtube-transcript-api>=1.0.0`, the first version with `RequestBlocked` / `IpBlocked` and the `YouTubeTranscriptApi().list()` API already in use.
 - Embedding builds now spot changed transcripts by a hash of their content. The hashes are stored in `embeddings.npz`, so a `git checkout` or `touch` no longer re-embeds the corpus. An `embeddings.npz` written by an older version gets its hashes on the next run, and its vectors are kept rather than recomputed. Only transcripts newer than that file's last build are re-embedded. To force a full re-embed, delete `references/embeddings.npz`.
 
 ### Fixed
+- `update` no longer counts a video that is still on the channel as removed when it falls past the `max` cut or outside the filter, so `--prune` keeps its transcript.
 - After a bootstrap that YouTube blocked before any transcript landed, `update` now detects the corpus language from the transcripts it fetches and resolves an `auto` quote style again (a fixed `--quote-style` is kept). While the AI hand-off is still pending, the stub SKILL.md and `.pending-llm-draft.json` are rewritten with the new values.
 - The first `update` that finishes without a block after a blocked bootstrap generates and runs the evals the bootstrap skipped. A `--no-llm` update leaves them pending for a later run. A failure there is logged and retried by the next update; it does not fail the update. An existing `evals/benchmark.json` (for example one the AI wrote) is kept and only run, and re-running `bootstrap --no-evals` drops the pending evals.
 - `--whisper-skip-if-no-captions` is saved in `selection_filter.yaml`, and `update` honours it; before, `update` always ran Whisper.
