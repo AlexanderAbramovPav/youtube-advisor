@@ -1,6 +1,8 @@
 import json
 import pathlib
 from unittest.mock import patch
+
+import pytest
 import yaml
 
 from youtube_advisor.update import run, _video_id_from_filename, _load_state, _save_state, _filter_from_yaml
@@ -574,3 +576,190 @@ def test_no_evals_drops_pending_evals(tmp_path):
     _, meta, m = _run_update(out, _ingest_writing("a"), no_llm=False, no_evals=True)
     m["gen_bench"].assert_not_called()
     assert "evals_pending" not in meta
+
+
+# ----- duration bounds round-trip & legacy compatibility -----
+
+def test_bootstrap_to_update_duration_round_trip(tmp_path):
+    from youtube_advisor.bootstrap import run as bootstrap_run
+    out = tmp_path / "yc-advisor"
+    initial = [
+        {**_stub_video("short1", pub="2024-06-01"), "length_seconds": 300},
+        {**_stub_video("long1", pub="2024-06-02"), "length_seconds": 3600},
+    ]
+
+    def _fake_ingest(videos, out_dir, **kw):
+        for v in videos:
+            write_transcript(out_dir, v, [{"start": 0, "duration": 1, "text": "hi"}],
+                             "captions", "en")
+        return {"ingested": len(videos), "skipped": 0, "failed": 0,
+                "by_source": {"captions": len(videos)}}
+
+    with patch("youtube_advisor.bootstrap.resolve_channel", return_value=initial), \
+         patch("youtube_advisor.bootstrap.run_ingest", side_effect=_fake_ingest), \
+         patch("youtube_advisor.bootstrap.build_embeddings"), \
+         patch("youtube_advisor.bootstrap.gen_skill"), \
+         patch("youtube_advisor.bootstrap.gen_bench"), \
+         patch("youtube_advisor.bootstrap.run_evals"):
+        bootstrap_run(
+            channels=("@yc",), since=None, until=None, max_n=500, playlists=(),
+            title_include=None, title_exclude=r"#?shorts\b",
+            min_duration=3600, max_duration=7200,
+            ids=None, out_dir=str(out), whisper_skip_if_no_captions=False,
+            multilingual=False, vendor=False, no_evals=True,
+            from_natural_language=True, intent="test",
+            answer_language="en", quote_style="auto", yes=True, no_llm=True,
+        )
+
+    saved = yaml.safe_load((out / "references" / "selection_filter.yaml").read_text())
+    assert saved["min_duration"] == 3600
+    assert saved["max_duration"] == 7200
+
+    listing = initial + [
+        {**_stub_video("short2", pub="2024-06-03"), "length_seconds": 900},
+        {**_stub_video("long2", pub="2024-06-04"), "length_seconds": 5400},
+        {**_stub_video("toolong", pub="2024-06-05"), "length_seconds": 9000},
+    ]
+    with patch("youtube_advisor.update.resolve_channel", return_value=listing) as res_ch, \
+         patch("youtube_advisor.update.run_ingest", side_effect=_fake_ingest) as ing, \
+         patch("youtube_advisor.update.build_embeddings"):
+        run(advisor_dir=str(out), yes=True, no_llm=True)
+
+    assert res_ch.call_args.kwargs["limit"] is None
+    assert [v["video_id"] for v in ing.call_args.args[0]] == ["long2"]
+
+
+def test_update_legacy_filter_without_duration_keys_does_not_fail_or_rewrite(tmp_path):
+    out = _setup_advisor(tmp_path, existing_ids=("a",))
+    filt_path = out / "references" / "selection_filter.yaml"
+    original_text = filt_path.read_text()
+    assert "min_duration" not in original_text
+    assert "max_duration" not in original_text
+
+    new_vids = [
+        {**_stub_video("a"), "length_seconds": 600},
+        {**_stub_video("tiny", pub="2024-06-02"), "length_seconds": 30},
+        {**_stub_video("huge", pub="2024-06-03"), "length_seconds": 14400},
+    ]
+
+    def _fake_ingest(videos, out_dir, **kw):
+        for v in videos:
+            write_transcript(out_dir, v, [{"start": 0, "duration": 1, "text": "hi"}],
+                             "captions", "en")
+        return {"ingested": len(videos), "skipped": 0, "failed": 0,
+                "by_source": {"captions": len(videos)}}
+
+    with patch("youtube_advisor.update.resolve_channel", return_value=new_vids), \
+         patch("youtube_advisor.update.run_ingest", side_effect=_fake_ingest) as ing, \
+         patch("youtube_advisor.update.build_embeddings"):
+        run(advisor_dir=str(out), yes=True, no_llm=True)
+
+    assert sorted(v["video_id"] for v in ing.call_args.args[0]) == ["huge", "tiny"]
+    assert filt_path.read_text() == original_text
+
+
+def test_cli_update_has_no_duration_flags():
+    from click.testing import CliRunner
+    from youtube_advisor.cli import main
+    res = CliRunner().invoke(main, ["update", "--help"])
+    assert res.exit_code == 0
+    assert "--min-duration" not in res.output
+    assert "--max-duration" not in res.output
+
+
+def _set_saved_bounds(out, **bounds):
+    path = out / "references" / "selection_filter.yaml"
+    filt = yaml.safe_load(path.read_text())
+    filt.update(bounds)
+    path.write_text(yaml.safe_dump(filt))
+
+
+def _ingest_writes(videos, out_dir, **kw):
+    for v in videos:
+        write_transcript(out_dir, v, [{"start": 0, "duration": 1, "text": "hi"}],
+                         "captions", "en")
+    return {"ingested": len(videos), "skipped": 0, "failed": 0,
+            "by_source": {"captions": len(videos)}}
+
+
+def test_update_reads_hand_edited_duration_strings(tmp_path):
+    out = _setup_advisor(tmp_path, existing_ids=("a",))
+    _set_saved_bounds(out, min_duration="1h", max_duration="2:00:00")
+    listing = [
+        {**_stub_video("a"), "length_seconds": 4000},
+        {**_stub_video("short", pub="2024-06-02"), "length_seconds": 600},
+        {**_stub_video("long", pub="2024-06-03"), "length_seconds": 5400},
+    ]
+    with patch("youtube_advisor.update.resolve_channel", return_value=listing), \
+         patch("youtube_advisor.update.run_ingest", side_effect=_ingest_writes) as ing, \
+         patch("youtube_advisor.update.build_embeddings"):
+        run(advisor_dir=str(out), yes=True, no_llm=True)
+    assert [v["video_id"] for v in ing.call_args.args[0]] == ["long"]
+
+
+@pytest.mark.parametrize("bounds", [
+    {"min_duration": "soon"},
+    {"max_duration": -5},
+    {"min_duration": 7200, "max_duration": 3600},
+])
+def test_update_rejects_bad_saved_bounds_before_listing(tmp_path, bounds):
+    import click
+    out = _setup_advisor(tmp_path, existing_ids=("a",))
+    _set_saved_bounds(out, **bounds)
+    with patch("youtube_advisor.update.resolve_channel") as res_ch:
+        with pytest.raises(click.UsageError, match="selection_filter.yaml"):
+            run(advisor_dir=str(out), yes=True, no_llm=True)
+    res_ch.assert_not_called()
+
+
+def test_prune_keeps_videos_still_listed_but_past_the_max_cut(tmp_path):
+    # Bounds turn the listing cap off, so the listing is the whole channel.
+    # 'a' and 'b' are still published but newer long videos push them past
+    # max=2; they are not "no longer on channel". 'gone' really left.
+    out = _setup_advisor(tmp_path, existing_ids=("a", "b", "gone"))
+    _set_saved_bounds(out, max=2, min_duration=60)
+    listing = [
+        {**_stub_video("a", pub="2024-06-01")},
+        {**_stub_video("b", pub="2024-06-01")},
+        {**_stub_video("n1", pub="2024-07-01")},
+        {**_stub_video("n2", pub="2024-07-02")},
+    ]
+    with patch("youtube_advisor.update.resolve_channel", return_value=listing) as res_ch, \
+         patch("youtube_advisor.update.run_ingest", side_effect=_ingest_writes), \
+         patch("youtube_advisor.update.build_embeddings"):
+        result = run(advisor_dir=str(out), prune=True, yes=True, no_llm=True)
+    assert res_ch.call_args.kwargs["limit"] is None
+    names = sorted(p.name for p in (out / "transcripts").glob("*.md"))
+    assert "2024-06-01-a.md" in names and "2024-06-01-b.md" in names
+    assert not any(n.endswith("-gone.md") for n in names)
+    assert "1 removed" in result["guide"]
+
+
+def test_prune_keeps_corpus_when_every_date_lookup_is_blocked(tmp_path, caplog):
+    # Real resolve_channel: the flat listing works, every per-video date
+    # lookup fails (as under a YouTube block), so no candidate survives.
+    # The listed videos are still on the channel: nothing may be pruned.
+    import subprocess
+    out = _setup_advisor(tmp_path, existing_ids=("a", "b"))
+    _set_saved_bounds(out, min_duration=60)
+    flat = json.dumps({"channel": "@yc", "channel_id": "UCx", "entries": [
+        {"_type": "url", "id": "a", "title": "ta", "duration": 600},
+        {"_type": "url", "id": "b", "title": "tb", "duration": 600},
+    ]})
+
+    def fake_run(cmd, **kw):
+        if "--flat-playlist" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout=flat, stderr="")
+        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="ERROR: not a bot")
+
+    import logging
+    with patch("youtube_advisor.fetch_channel.subprocess.run", side_effect=fake_run), \
+         patch("youtube_advisor.update.run_ingest", side_effect=_ingest_writes), \
+         patch("youtube_advisor.update.build_embeddings"), \
+         caplog.at_level(logging.WARNING, logger="youtube_advisor.fetch_channel"):
+        result = run(advisor_dir=str(out), prune=True, yes=True, no_llm=True)
+    drops = [r.getMessage() for r in caplog.records if "could not be read" in r.getMessage()]
+    assert len(drops) == 1 and "dropped 2 of 2" in drops[0]
+    assert (out / "transcripts" / "2024-06-01-a.md").exists()
+    assert (out / "transcripts" / "2024-06-01-b.md").exists()
+    assert "0 removed" in result["guide"]

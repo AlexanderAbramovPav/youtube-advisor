@@ -89,7 +89,7 @@ The assistant replays your original selection filter, fetches only what's new, r
 - **Verbatim quotes with timestamps.** Every answer is grounded in real transcript text and links to `youtube.com/watch?v=ID&t=SECONDS` — click and the video opens at that exact second.
 - **Uses your AI's brain.** Skill drafting and answering run through whatever assistant you're already using — nothing extra to configure.
 - **Free captions when available; local Whisper when not.** A three-tier cascade keeps cost near zero and falls back to on-device transcription only when YouTube has none.
-- **Incremental updates that respect your filter.** Your original selection (channel + date range + title filters + max count) is saved and replayed on every refresh.
+- **Incremental updates that respect your filter.** Your original selection (channel + date range + title filters + duration bounds + max count) is saved and replayed on every refresh.
 
 ## What an answer looks like
 
@@ -141,6 +141,8 @@ youtube-advisor bootstrap \
   --max 200 \
   --title-include "Founder Stories|How to" \
   --title-exclude "shorts|#shorts" \
+  --min-duration 15m \
+  --max-duration 2h \
   --out ~/.claude/skills/yc-advisor \
   --yes
 
@@ -152,6 +154,8 @@ youtube-advisor update --advisor ~/.claude/skills/yc-advisor --since 2026-01-01 
 youtube-advisor update --advisor ~/.claude/skills/yc-advisor --reindex-only
 youtube-advisor update --advisor ~/.claude/skills/yc-advisor --run-evals --yes
 ```
+
+`--min-duration` and `--max-duration` are inclusive and accept plain seconds (`3600`), unit forms (`90m`, `2h`, `1h30m`), `MM:SS`, or `H:MM:SS`. Videos whose length is unknown are kept (with a warning) rather than dropped silently, and duration filtering runs before `--max`. A duration bound makes `bootstrap` and every `update` list the whole channel and look up each video's date (one yt-dlp call per video), as `--since` does; pass `--cookies-from-browser`: without cookies, YouTube can block the IP after as few as ~150 lookups. To change the bounds of an existing advisor, edit `min_duration` / `max_duration` in `references/selection_filter.yaml` (seconds or the same forms).
 
 `youtube-advisor bootstrap --help` and `youtube-advisor update --help` print the full flag list.
 

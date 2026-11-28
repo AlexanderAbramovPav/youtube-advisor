@@ -459,3 +459,97 @@ def test_blocked_bootstrap_then_clean_update(tmp_path, mock_no_llm_pipeline):
     evals.assert_called_once_with(out)
     assert "evals_pending" not in meta
     assert "blocked" not in result["summary"]
+
+
+# ----- duration selection -----
+
+def test_cli_bootstrap_duration_flags_parsed(tmp_path):
+    from click.testing import CliRunner
+    from youtube_advisor.cli import main
+    with patch("youtube_advisor.cli.bs_mod.run",
+               return_value={"guide": "OK", "summary": {}}) as run_mock:
+        res = CliRunner().invoke(
+            main,
+            ["bootstrap", "--channel", "@yc", "--min-duration", "1h30m",
+             "--max-duration", "2:00:00", "--out", str(tmp_path / "x"), "--yes"],
+        )
+    assert res.exit_code == 0, res.output
+    assert run_mock.call_args.kwargs["min_duration"] == 5400
+    assert run_mock.call_args.kwargs["max_duration"] == 7200
+
+
+@pytest.mark.parametrize("args", [
+    ["--min-duration", "notaduration"],
+    ["--max-duration", "1:60"],
+    ["--min-duration=-5"],
+    ["--min-duration", "-10m"],
+    ["--max-duration=-1"],
+    ["--min-duration", "2h", "--max-duration", "1h"],
+    ["--max-duration", "0"],
+    ["--max-duration", "0:00"],
+])
+def test_cli_bootstrap_duration_errors_exit_2_without_traceback(tmp_path, args):
+    from click.testing import CliRunner
+    from youtube_advisor.cli import main
+    with patch("youtube_advisor.cli.bs_mod.run") as run_mock:
+        res = CliRunner().invoke(
+            main,
+            ["bootstrap", "--channel", "@yc", *args, "--out", str(tmp_path / "x"), "--yes"],
+        )
+    assert res.exit_code == 2, res.output
+    assert "Traceback" not in res.output
+    run_mock.assert_not_called()
+
+
+def test_bootstrap_saves_duration_bounds_and_nulls(tmp_path, mock_pipeline):
+    import yaml
+    out1 = tmp_path / "bounded"
+    run(**_base_kwargs(out1, min_duration=300, max_duration=900))
+    snap1 = yaml.safe_load((out1 / "references" / "selection_filter.yaml").read_text())
+    assert snap1["min_duration"] == 300
+    assert snap1["max_duration"] == 900
+
+    out2 = tmp_path / "unbounded"
+    run(**_base_kwargs(out2))
+    snap2 = yaml.safe_load((out2 / "references" / "selection_filter.yaml").read_text())
+    assert "min_duration" in snap2 and snap2["min_duration"] is None
+    assert "max_duration" in snap2 and snap2["max_duration"] is None
+
+
+def test_bootstrap_disables_listing_limit_when_duration_bound_set(tmp_path, mock_pipeline):
+    out = tmp_path / "yc-advisor"
+    with patch("youtube_advisor.bootstrap.resolve_channel",
+               return_value=[_stub_video("a")]) as res_ch:
+        run(**_base_kwargs(out, max_n=10, min_duration=300))
+    assert res_ch.call_args.kwargs["limit"] is None
+
+
+@pytest.mark.parametrize("min_d,max_d,expected", [
+    (3600, None, "≥ 1h"),
+    (None, 1200, "≤ 20m"),
+    (600, 3600, "≥ 10m, ≤ 1h"),
+])
+def test_bootstrap_confirm_shows_readable_duration_bounds(
+    tmp_path, mock_pipeline, capsys, min_d, max_d, expected
+):
+    out = tmp_path / "yc-advisor"
+    vids = [{**_stub_video("a"), "length_seconds": 3600 if min_d == 3600 else 900}]
+    with patch("youtube_advisor.bootstrap.resolve_channel", return_value=vids), \
+         patch("youtube_advisor.bootstrap.click.confirm", return_value=True):
+        run(**_base_kwargs(
+            out,
+            yes=False,
+            from_natural_language=False,
+            min_duration=min_d,
+            max_duration=max_d,
+        ))
+    captured = capsys.readouterr().out
+    assert expected in captured
+
+
+def test_bootstrap_confirm_omits_duration_when_unset(tmp_path, mock_pipeline, capsys):
+    out = tmp_path / "yc-advisor"
+    with patch("youtube_advisor.bootstrap.click.confirm", return_value=True):
+        run(**_base_kwargs(out, yes=False, from_natural_language=False))
+    captured = capsys.readouterr().out
+    assert "duration" not in captured.lower()

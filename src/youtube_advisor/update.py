@@ -8,7 +8,7 @@ import click
 import yaml
 
 from ._cookies import resolve_cookies
-from .filters import FilterConfig, apply_filters
+from .filters import FilterConfig, apply_filters, duration_from_saved
 from .fetch_channel import resolve_channel, resolve_video
 from .ingest.orchestrator import blocked_message, run_ingest
 from .build_index import build_index
@@ -32,10 +32,17 @@ def _load_state(advisor_dir: pathlib.Path) -> tuple[dict, dict]:
     return filt, meta
 
 
-def _save_state(advisor_dir: pathlib.Path, filt: dict, meta: dict) -> None:
+def _save_state(
+    advisor_dir: pathlib.Path,
+    filt: dict,
+    meta: dict,
+    *,
+    save_filter: bool = True,
+) -> None:
     refs = advisor_dir / "references"
     refs.mkdir(parents=True, exist_ok=True)
-    (refs / "selection_filter.yaml").write_text(dump_yaml(filt))
+    if save_filter:
+        (refs / "selection_filter.yaml").write_text(dump_yaml(filt))
     (refs / "corpus_meta.json").write_text(json.dumps(meta, indent=2, ensure_ascii=False))
 
 
@@ -52,13 +59,31 @@ def _playlist_ids_from_urls(urls: list[str]) -> set[str]:
     return ids
 
 
+def _saved_duration_bounds(filt: dict) -> tuple[int | None, int | None]:
+    """Read min/max_duration from a saved filter. A missing key (an advisor
+    built before duration bounds) means no bound."""
+    try:
+        lo = duration_from_saved(filt.get("min_duration"))
+        hi = duration_from_saved(filt.get("max_duration"))
+    except ValueError as e:
+        raise click.UsageError(f"references/selection_filter.yaml: {e}") from None
+    if lo is not None and hi is not None and lo > hi:
+        raise click.UsageError(
+            "references/selection_filter.yaml: min_duration is greater than max_duration."
+        )
+    return lo, hi
+
+
 def _filter_from_yaml(filt: dict) -> FilterConfig:
+    min_duration, max_duration = _saved_duration_bounds(filt)
     return FilterConfig(
         since=date.fromisoformat(filt["since"]) if filt.get("since") else None,
         until=date.fromisoformat(filt["until"]) if filt.get("until") else None,
         max=filt.get("max", 500),
         title_include=filt.get("title_include"),
         title_exclude=filt.get("title_exclude"),
+        min_duration=min_duration,
+        max_duration=max_duration,
         playlist_ids=_playlist_ids_from_urls(filt.get("playlists", [])),
         manual_ids=set(filt.get("extra_ids", [])),
     )
@@ -151,7 +176,7 @@ def _generate_pending_evals(out: pathlib.Path, filt: dict,
                     "next update tries again.", e)
         return True, None
     meta.pop("evals_pending", None)
-    _save_state(out, filt, meta)
+    _save_state(out, filt, meta, save_filter=False)
     return True, summary
 
 
@@ -182,19 +207,24 @@ def run(*, advisor_dir, since=None, max_n=None, ids=None,
 
     # CLI overrides — normalise dates at the boundary so downstream
     # `date.fromisoformat()` never sees a datetime-shaped string.
+    filt_changed = False
     if since is not None:
         d = since.date() if hasattr(since, "date") else since
         filt["since"] = d.isoformat() if hasattr(d, "isoformat") else d
+        filt_changed = True
     if max_n is not None:
         filt["max"] = max_n
+        filt_changed = True
     if ids is not None:
         ids_path = pathlib.Path(ids)
         extra = {line.strip() for line in ids_path.read_text().splitlines() if line.strip()}
         filt["extra_ids"] = sorted(set(filt.get("extra_ids", [])) | extra)
+        filt_changed = True
     if no_evals:
         meta.pop("evals_pending", None)
     if whisper_skip_if_no_captions is not None:
         filt["whisper_skip_if_no_captions"] = bool(whisper_skip_if_no_captions)
+        filt_changed = True
 
     # Resolve LLM mode up-front so the early-return path can gate evals correctly.
     effective_no_llm = should_skip_llm(no_llm)
@@ -210,24 +240,36 @@ def run(*, advisor_dir, since=None, max_n=None, ids=None,
         build_index(out / "transcripts", out / "references", incremental=False)
         build_embeddings(out / "transcripts", out / "references",
                          model_name=meta["embedding_model"], incremental=False)
-        _save_state(out, filt, meta)
+        _save_state(out, filt, meta, save_filter=filt_changed)
         return {"guide": update_guide(out, 0, 0), "evals": None}
 
     # Re-resolve channels. Same capped-listing heuristic as bootstrap: when
-    # only `max` narrows selection (no date/title filters), the newest-first
+    # only `max` narrows selection (no date/title/duration filters), the newest-first
     # /videos tab top max*3 is guaranteed to contain the max newest videos —
     # avoids the per-video date-resolution pass over the entire channel.
     # Manual extra_ids are resolved individually below, so the cap never
-    # hides them.
+    # hides them. A duration bound turns the cap off: the max newest videos
+    # in bounds can lie anywhere in the channel. That costs one yt-dlp date
+    # lookup per listed video on every update, as --since does.
+    cfg = _filter_from_yaml(filt)  # validate the saved filter before listing
     listing_limit = None
-    if filt.get("max") and not filt.get("since") and not filt.get("until") \
-            and not filt.get("title_include"):
+    if (
+        filt.get("max")
+        and not filt.get("since")
+        and not filt.get("until")
+        and not filt.get("title_include")
+        and cfg.min_duration is None
+        and cfg.max_duration is None
+    ):
         listing_limit = filt["max"] * 3
     candidates = []
+    listed: set[str] = set()  # every listed id, dated or not
     for ch in filt["channels"]:
-        candidates.extend(resolve_channel(ch, limit=listing_limit, cookies=cookies))
+        candidates.extend(resolve_channel(ch, limit=listing_limit, cookies=cookies,
+                                          listed_ids=listed))
     for pl in filt.get("playlists", []):
-        candidates.extend(resolve_channel(pl, limit=listing_limit, cookies=cookies))
+        candidates.extend(resolve_channel(pl, limit=listing_limit, cookies=cookies,
+                                          listed_ids=listed))
 
     # Manual ids outside the (possibly capped) listing get their metadata
     # fetched individually — they must be present in candidates to survive
@@ -239,23 +281,28 @@ def run(*, advisor_dir, since=None, max_n=None, ids=None,
             if v:
                 candidates.append(v)
 
-    cfg = _filter_from_yaml(filt)
     selected = apply_filters(candidates, cfg)
 
     existing_ids = {video_id_from_filename(p) for p in (out / "transcripts").glob("*.md")}
     new_videos = [v for v in selected if v["video_id"] not in existing_ids]
-    on_channel = {v["video_id"] for v in selected}
+    # "On channel" is every listed video, not just the selected ones: a video
+    # pushed past the `max` cut or outside the filter is still published, and
+    # `--prune` must not delete its transcript.
+    # A video whose date lookup failed (a YouTube block) is in `listed` but
+    # not in `candidates`; it is still on the channel.
+    on_channel = listed | {v["video_id"] for v in candidates}
     # A capped listing cannot prove a video left the channel UNLESS the listing
     # came back smaller than the cap — in that case we've seen the whole channel.
     # Otherwise (listing hit the cap), refuse to compute "missing".
-    full_listing = listing_limit is None or len(candidates) < listing_limit
+    n_listed = len(listed) if listed else len(candidates)
+    full_listing = listing_limit is None or n_listed < listing_limit
     missing = existing_ids - on_channel if full_listing else set()
 
     if not new_videos and not missing:
         # Persist any CLI overrides even when corpus didn't change.
         if _refresh_corpus_language(out, meta):
             _rewrite_stub(out, meta)
-        _save_state(out, filt, meta)
+        _save_state(out, filt, meta, save_filter=filt_changed)
         attempted, eval_summary = (_generate_pending_evals(out, filt, meta)
                                    if not effective_no_llm else (False, None))
         if not attempted and run_evals_ and not effective_no_llm:
@@ -309,7 +356,7 @@ def run(*, advisor_dir, since=None, max_n=None, ids=None,
 
     if _refresh_corpus_language(out, meta):
         _rewrite_stub(out, meta)
-    _save_state(out, filt, meta)
+    _save_state(out, filt, meta, save_filter=filt_changed)
 
     blocked = bool(summary.get("blocked"))
     if blocked and (regen_skill_md or run_evals_):

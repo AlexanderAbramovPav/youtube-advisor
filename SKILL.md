@@ -30,7 +30,9 @@ Extract from the user's message:
   - If a creator is named without a URL, search via `yt-dlp ytsearch5:"<name>"` (or `yt-dlp --get-id ytsearch3:"<name> channel"`), then ASK the user "I found @navalr — Naval Ravikant's channel — use that one?" before continuing. Don't guess.
 - **Selection hints**:
   - "last year" → `--since 2025-MM-DD` (today minus 1 year).
-  - "long videos only" → `--title-exclude "shorts|#shorts"` (already default — no extra flag).
+  - "long videos only" (no threshold) → `--title-exclude "shorts|#shorts"` (already default — no extra flag).
+  - "only interviews longer than an hour" / "at least 30 minutes" → `--min-duration 1h` / `--min-duration 30m` (also accepts `3600`, `90m`, `1h30m`, `MM:SS`, `H:MM:SS`).
+  - "under 20 minutes" / "between 20 and 60 minutes" → `--max-duration 20m` / `--min-duration 20m --max-duration 1h`.
   - "the Founder Stories series" → `--title-include "Founder Stories"`.
   - Pasted video URLs → write IDs to `/tmp/ids.txt`, pass `--ids /tmp/ids.txt`.
 - **Intent sentence** — for the LLM SKILL.md drafter (`--intent "..."`).
@@ -137,23 +139,24 @@ youtube-advisor bootstrap \
 
 User sees: confirmation summary → progress updates → postrun guide. NEVER sees the flags.
 
-### Example 2 — date hint, long videos only
+### Example 2 — date hint + duration bound
 
 User: `pick interviews longer than 1 hour from 2024 onwards on @lexfridman`
 
 You parse:
 - channel = `@lexfridman`
 - since = `2024-01-01`
-- title_exclude default already drops shorts; "longer than 1 hour" is a length filter not yet in v1 — skip it and accept all matching videos.
+- min_duration = `1h` (inclusive; combine with `--max-duration` for an upper bound)
+- title_exclude default already drops shorts.
 
 You run:
 ```
-youtube-advisor bootstrap --channel @lexfridman --since 2024-01-01 \
+youtube-advisor bootstrap --channel @lexfridman --since 2024-01-01 --min-duration 1h \
   --out ~/.claude/skills/lex-advisor \
   --from-natural-language --intent "Long-form Lex Fridman interviews" --yes
 ```
 
-Tell the user: "Note: I'll pull videos from 2024 onwards. The shorts filter is on by default. Length-based filtering isn't a v1 feature, so very short interviews will also be included — let me know if you'd like to drop them manually later."
+User sees: confirmation summary ("videos ≥ 1h from 2024 onwards") → progress updates → postrun guide. NEVER sees the flags.
 
 ### Example 3 — explicit video IDs
 

@@ -2,6 +2,22 @@ from __future__ import annotations
 import click
 
 from . import bootstrap as bs_mod
+from .filters import format_duration, parse_duration
+
+
+class _DurationParamType(click.ParamType):
+    name = "duration"
+
+    def convert(self, value, param, ctx):
+        if value is None or (isinstance(value, int) and not isinstance(value, bool)):
+            return value
+        try:
+            return parse_duration(str(value))
+        except ValueError as e:
+            self.fail(str(e), param, ctx)
+
+
+DURATION = _DurationParamType()
 
 
 @click.group()
@@ -32,6 +48,10 @@ def _exit_if_blocked(result: dict) -> None:
               help="Regex; only keep videos whose title matches.")
 @click.option("--title-exclude", default=r"#?shorts\b",
               help="Regex; drop videos whose title matches (defaults to shorts).")
+@click.option("--min-duration", type=DURATION, default=None,
+              help="Minimum video length (inclusive): seconds, 90m, 2h, 1h30m, MM:SS, or H:MM:SS.")
+@click.option("--max-duration", type=DURATION, default=None,
+              help="Maximum video length (inclusive): seconds, 90m, 2h, 1h30m, MM:SS, or H:MM:SS.")
 @click.option("--ids", type=click.Path(exists=True), default=None,
               help="Path to a file with extra video IDs (one per line) to always include.")
 @click.option("--out", "out_dir", type=click.Path(), required=True,
@@ -64,6 +84,15 @@ def _exit_if_blocked(result: dict) -> None:
 @click.option("--yes", is_flag=True, help="Skip all confirmation prompts.")
 def bootstrap(**kw):
     """Create a new advisor skill from a YouTube channel."""
+    min_d = kw.get("min_duration")
+    max_d = kw.get("max_duration")
+    if max_d == 0:
+        raise click.UsageError("--max-duration must be greater than 0.")
+    if min_d is not None and max_d is not None and min_d > max_d:
+        raise click.UsageError(
+            f"--min-duration ({format_duration(min_d)}) cannot be greater than "
+            f"--max-duration ({format_duration(max_d)})."
+        )
     out = bs_mod.run(**kw)
     click.echo(out["guide"])
     _exit_if_blocked(out)

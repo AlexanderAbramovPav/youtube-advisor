@@ -2,7 +2,10 @@ from __future__ import annotations
 import json
 import pathlib
 
+import yaml
+
 from ._naming import short_slug
+from .filters import duration_from_saved, format_duration_bounds
 
 # Back-compat alias for tests that import the underscore name.
 _short_slug = short_slug
@@ -32,6 +35,19 @@ def _source_counts_text(by_source: dict) -> str:
     return ", ".join(parts) if parts else "all transcripts"
 
 
+def _duration_filter_line(advisor_dir: pathlib.Path) -> str:
+    filt_path = advisor_dir / "references" / "selection_filter.yaml"
+    if not filt_path.exists():
+        return ""
+    filt = yaml.safe_load(filt_path.read_text()) or {}
+    try:
+        bounds = format_duration_bounds(duration_from_saved(filt.get("min_duration")),
+                                        duration_from_saved(filt.get("max_duration")))
+    except ValueError:
+        return ""  # a hand-edited bad value; `update` reports it
+    return f"Duration filter: {bounds}.\n" if bounds else ""
+
+
 def bootstrap_guide(advisor_dir: pathlib.Path) -> str:
     meta = json.loads((advisor_dir / "references" / "corpus_meta.json").read_text())
     eval_sum = _latest_eval_summary(advisor_dir)
@@ -44,6 +60,7 @@ def bootstrap_guide(advisor_dir: pathlib.Path) -> str:
     slug_short = short_slug(advisor_dir.name)
     channels = ", ".join(meta.get("channels", []))
     date_range = meta.get("date_range", "")
+    duration_line = _duration_filter_line(advisor_dir)
     corpus_lang = meta.get("corpus_language", "?")
     answer_lang = meta.get("answer_language", "?")
     quote_style = meta.get("quote_style", "?")
@@ -51,7 +68,7 @@ def bootstrap_guide(advisor_dir: pathlib.Path) -> str:
     return f"""✓ Advisor ready: {advisor_dir}
 
 Corpus: {meta['n_videos']} videos from {channels} ({date_range}), {sources_text}.
-Languages: corpus {corpus_lang}, answers {answer_lang} ({quote_style} quote format).
+{duration_line}Languages: corpus {corpus_lang}, answers {answer_lang} ({quote_style} quote format).
 Indices: keyword + semantic embeddings ({meta.get('embedding_model', '?')}).
 {eval_line}
 

@@ -9,7 +9,7 @@ from jinja2 import Environment, FileSystemLoader
 
 from ._cookies import resolve_cookies
 from ._progress import Progress
-from .filters import FilterConfig, apply_filters
+from .filters import FilterConfig, apply_filters, format_duration, format_duration_bounds
 from .fetch_channel import resolve_channel
 from .ingest.orchestrator import blocked_message, run_ingest
 from .build_index import build_index
@@ -271,6 +271,8 @@ def _no_llm_postrun(advisor_dir: pathlib.Path) -> str:
 def run(*, channels, since, until, max_n, playlists, title_include, title_exclude,
         ids, out_dir, whisper_skip_if_no_captions, multilingual, vendor, no_evals,
         from_natural_language, intent, answer_language, quote_style, yes,
+        min_duration: int | None = None,
+        max_duration: int | None = None,
         no_llm=None,
         cookies_from_browser: str | None = None,
         cookies_file: str | None = None) -> dict:
@@ -278,6 +280,18 @@ def run(*, channels, since, until, max_n, playlists, title_include, title_exclud
 
     Returns a dict {guide, meta, summary}. The CLI prints `guide`.
     """
+    if min_duration is not None and min_duration < 0:
+        raise click.UsageError("--min-duration cannot be negative.")
+    if max_duration is not None and max_duration < 0:
+        raise click.UsageError("--max-duration cannot be negative.")
+    if max_duration == 0:
+        raise click.UsageError("--max-duration must be greater than 0.")
+    if min_duration is not None and max_duration is not None and min_duration > max_duration:
+        raise click.UsageError(
+            f"--min-duration ({format_duration(min_duration)}) cannot be greater than "
+            f"--max-duration ({format_duration(max_duration)})."
+        )
+
     out = pathlib.Path(out_dir).expanduser()
     cookies = resolve_cookies(
         from_browser=cookies_from_browser,
@@ -318,7 +332,15 @@ def run(*, channels, since, until, max_n, playlists, title_include, title_exclud
     # resolve_channel() runs over the ENTIRE channel (1000+ yt-dlp calls on
     # large channels) just to throw away all but N.
     listing_limit = None
-    if max_n and not since and not until and not title_include and not ids:
+    if (
+        max_n
+        and not since
+        and not until
+        and not title_include
+        and min_duration is None
+        and max_duration is None
+        and not ids
+    ):
         listing_limit = max_n * 3  # headroom for title_exclude (shorts) drops
     candidates: list[dict] = []
     for ch in channels:
@@ -344,6 +366,8 @@ def run(*, channels, since, until, max_n, playlists, title_include, title_exclud
         max=max_n,
         title_include=title_include,
         title_exclude=title_exclude,
+        min_duration=min_duration,
+        max_duration=max_duration,
         playlist_ids=_playlist_ids_from_urls(list(playlists)),
         manual_ids=manual_ids,
     )
@@ -356,8 +380,10 @@ def run(*, channels, since, until, max_n, playlists, title_include, title_exclud
     # 4) Confirm (skipped when --yes or --from-natural-language).
     n = len(selected)
     if not yes and not from_natural_language:
+        bounds = format_duration_bounds(cfg.min_duration, cfg.max_duration)
+        bounds_suffix = f" (duration {bounds})" if bounds else ""
         click.echo(
-            f"Found {n} videos. Estimated ingest: ~{n * 5}s captions + "
+            f"Found {n} videos{bounds_suffix}. Estimated ingest: ~{n * 5}s captions + "
             "Whisper fallback for any without subtitles."
         )
         click.confirm("Continue?", abort=True)
@@ -435,6 +461,8 @@ def run(*, channels, since, until, max_n, playlists, title_include, title_exclud
         "max": cfg.max,
         "title_include": cfg.title_include,
         "title_exclude": cfg.title_exclude,
+        "min_duration": cfg.min_duration,
+        "max_duration": cfg.max_duration,
         "playlists": list(playlists),
         "extra_ids": sorted(cfg.manual_ids),
         "whisper_skip_if_no_captions": bool(whisper_skip_if_no_captions),
