@@ -735,7 +735,7 @@ def test_prune_keeps_videos_still_listed_but_past_the_max_cut(tmp_path):
     assert "1 removed" in result["guide"]
 
 
-def test_prune_keeps_corpus_when_every_date_lookup_is_blocked(tmp_path):
+def test_prune_keeps_corpus_when_every_date_lookup_is_blocked(tmp_path, caplog):
     # Real resolve_channel: the flat listing works, every per-video date
     # lookup fails (as under a YouTube block), so no candidate survives.
     # The listed videos are still on the channel: nothing may be pruned.
@@ -752,10 +752,14 @@ def test_prune_keeps_corpus_when_every_date_lookup_is_blocked(tmp_path):
             return subprocess.CompletedProcess(cmd, 0, stdout=flat, stderr="")
         return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="ERROR: not a bot")
 
+    import logging
     with patch("youtube_advisor.fetch_channel.subprocess.run", side_effect=fake_run), \
          patch("youtube_advisor.update.run_ingest", side_effect=_ingest_writes), \
-         patch("youtube_advisor.update.build_embeddings"):
+         patch("youtube_advisor.update.build_embeddings"), \
+         caplog.at_level(logging.WARNING, logger="youtube_advisor.fetch_channel"):
         result = run(advisor_dir=str(out), prune=True, yes=True, no_llm=True)
+    drops = [r.getMessage() for r in caplog.records if "could not be read" in r.getMessage()]
+    assert len(drops) == 1 and "dropped 2 of 2" in drops[0]
     assert (out / "transcripts" / "2024-06-01-a.md").exists()
     assert (out / "transcripts" / "2024-06-01-b.md").exists()
     assert "0 removed" in result["guide"]
