@@ -1,11 +1,14 @@
 from __future__ import annotations
 import concurrent.futures as cf
 import json
+import logging
 import re
 import subprocess
 from datetime import datetime
 
 from ._cookies import ytdlp_args
+
+log = logging.getLogger(__name__)
 
 
 def _fetch_upload_date(video_id: str, cookies: dict | None = None) -> str | None:
@@ -78,7 +81,12 @@ def resolve_channel(
     handle_or_url: str,
     limit: int | None = None,
     cookies: dict | None = None,
+    listed_ids: set[str] | None = None,
 ) -> list[dict]:
+    """List a channel or playlist. Entries whose date cannot be resolved are
+    dropped. Pass ``listed_ids`` to collect the id of EVERY listed entry,
+    dated or not: a video whose date lookup failed (often a YouTube block)
+    is still on the channel."""
     url = _channel_url(handle_or_url)
     cmd = ["yt-dlp", *ytdlp_args(cookies), "--flat-playlist", "-J", url]
     if limit is not None:
@@ -136,6 +144,8 @@ def resolve_channel(
             "playlist_ids": {playlist_id} if playlist_id else set(),
         }
         out.append(entry)
+        if listed_ids is not None:
+            listed_ids.add(vid)
         if published is None:
             needs_date.append(entry)
 
@@ -154,4 +164,9 @@ def resolve_channel(
                     e["published_date"] = None
 
     # Drop entries we still couldn't date — better than mislabelling with today.
-    return [e for e in out if e["published_date"]]
+    dated = [e for e in out if e["published_date"]]
+    if len(dated) < len(out):
+        log.warning("%s: dropped %d of %d listed video(s) whose upload date could not "
+                    "be read (a YouTube block if most failed; try --cookies-from-browser).",
+                    handle_or_url, len(out) - len(dated), len(out))
+    return dated

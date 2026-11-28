@@ -733,3 +733,29 @@ def test_prune_keeps_videos_still_listed_but_past_the_max_cut(tmp_path):
     assert "2024-06-01-a.md" in names and "2024-06-01-b.md" in names
     assert not any(n.endswith("-gone.md") for n in names)
     assert "1 removed" in result["guide"]
+
+
+def test_prune_keeps_corpus_when_every_date_lookup_is_blocked(tmp_path):
+    # Real resolve_channel: the flat listing works, every per-video date
+    # lookup fails (as under a YouTube block), so no candidate survives.
+    # The listed videos are still on the channel: nothing may be pruned.
+    import subprocess
+    out = _setup_advisor(tmp_path, existing_ids=("a", "b"))
+    _set_saved_bounds(out, min_duration=60)
+    flat = json.dumps({"channel": "@yc", "channel_id": "UCx", "entries": [
+        {"_type": "url", "id": "a", "title": "ta", "duration": 600},
+        {"_type": "url", "id": "b", "title": "tb", "duration": 600},
+    ]})
+
+    def fake_run(cmd, **kw):
+        if "--flat-playlist" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout=flat, stderr="")
+        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="ERROR: not a bot")
+
+    with patch("youtube_advisor.fetch_channel.subprocess.run", side_effect=fake_run), \
+         patch("youtube_advisor.update.run_ingest", side_effect=_ingest_writes), \
+         patch("youtube_advisor.update.build_embeddings"):
+        result = run(advisor_dir=str(out), prune=True, yes=True, no_llm=True)
+    assert (out / "transcripts" / "2024-06-01-a.md").exists()
+    assert (out / "transcripts" / "2024-06-01-b.md").exists()
+    assert "0 removed" in result["guide"]

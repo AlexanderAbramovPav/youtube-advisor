@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - `update` no longer counts a video that is still on the channel as removed when it falls past the `max` cut or outside the filter, so `--prune` keeps its transcript.
+- `update` no longer treats a listed video whose upload date could not be read (a YouTube block) as removed; before, a blocked date pass made `--prune` delete the whole corpus of a fully listed advisor. The dropped entries are now counted in one warning.
 - After a bootstrap that YouTube blocked before any transcript landed, `update` now detects the corpus language from the transcripts it fetches and resolves an `auto` quote style again (a fixed `--quote-style` is kept). While the AI hand-off is still pending, the stub SKILL.md and `.pending-llm-draft.json` are rewritten with the new values.
 - The first `update` that finishes without a block after a blocked bootstrap generates and runs the evals the bootstrap skipped. A `--no-llm` update leaves them pending for a later run. A failure there is logged and retried by the next update; it does not fail the update. An existing `evals/benchmark.json` (for example one the AI wrote) is kept and only run, and re-running `bootstrap --no-evals` drops the pending evals.
 - `--whisper-skip-if-no-captions` is saved in `selection_filter.yaml`, and `update` honours it; before, `update` always ran Whisper.

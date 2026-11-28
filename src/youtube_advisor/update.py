@@ -263,10 +263,13 @@ def run(*, advisor_dir, since=None, max_n=None, ids=None,
     ):
         listing_limit = filt["max"] * 3
     candidates = []
+    listed: set[str] = set()  # every listed id, dated or not
     for ch in filt["channels"]:
-        candidates.extend(resolve_channel(ch, limit=listing_limit, cookies=cookies))
+        candidates.extend(resolve_channel(ch, limit=listing_limit, cookies=cookies,
+                                          listed_ids=listed))
     for pl in filt.get("playlists", []):
-        candidates.extend(resolve_channel(pl, limit=listing_limit, cookies=cookies))
+        candidates.extend(resolve_channel(pl, limit=listing_limit, cookies=cookies,
+                                          listed_ids=listed))
 
     # Manual ids outside the (possibly capped) listing get their metadata
     # fetched individually — they must be present in candidates to survive
@@ -285,11 +288,14 @@ def run(*, advisor_dir, since=None, max_n=None, ids=None,
     # "On channel" is every listed video, not just the selected ones: a video
     # pushed past the `max` cut or outside the filter is still published, and
     # `--prune` must not delete its transcript.
-    on_channel = {v["video_id"] for v in candidates}
+    # A video whose date lookup failed (a YouTube block) is in `listed` but
+    # not in `candidates`; it is still on the channel.
+    on_channel = listed | {v["video_id"] for v in candidates}
     # A capped listing cannot prove a video left the channel UNLESS the listing
     # came back smaller than the cap — in that case we've seen the whole channel.
     # Otherwise (listing hit the cap), refuse to compute "missing".
-    full_listing = listing_limit is None or len(candidates) < listing_limit
+    n_listed = len(listed) if listed else len(candidates)
+    full_listing = listing_limit is None or n_listed < listing_limit
     missing = existing_ids - on_channel if full_listing else set()
 
     if not new_videos and not missing:
